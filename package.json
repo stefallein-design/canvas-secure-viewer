@@ -8,11 +8,12 @@
     "start": "node src/server.js"
   },
   "dependencies": {
-    "cookie-parser": "^1.4.6",
-    "express": "^4.19.2",
-    "jose": "^5.9.6",
-    "node-fetch": "^3.3.2",
-    "oauth-1.0a": "^2.2.6"
-  }
+  "cookie-parser": "^1.4.6",
+  "express": "^4.19.2",
+  "jose": "^5.9.6",
+  "node-fetch": "^3.3.2",
+  "oauth-1.0a": "^2.2.6",
+  "multer": "^1.4.5-lts.1"
+}
 }
 

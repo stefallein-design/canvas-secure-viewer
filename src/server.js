@@ -1,4 +1,4 @@
-// src/server.js (LTI 1.1 + secure image streaming + admin PDF upload + temp poppler debug)
+// src/server.js (LTI 1.1 + secure image streaming + admin PDF upload + /api/me for watermark + poppler debug)
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
@@ -32,7 +32,7 @@ async function ensureDirs() {
 ensureDirs().catch(() => {});
 
 // -------------------------
-// Basics
+// Basics / health
 // -------------------------
 app.get("/", (req, res) => {
   res.status(200).send("OK - tool is running (LTI 1.1 + viewer)");
@@ -52,7 +52,6 @@ app.get("/debug/poppler", async (req, res) => {
 // Helpers
 // -------------------------
 function getBaseUrl(req) {
-  // Render is behind a proxy; respect forwarded proto
   const proto = (req.headers["x-forwarded-proto"] || req.protocol).split(",")[0];
   return `${proto}://${req.get("host")}`;
 }
@@ -113,7 +112,10 @@ function verifyLti11Launch(req) {
   return true;
 }
 
-// ---- Stateless auth cookie (HMAC signed)
+// -------------------------
+// Stateless auth token (HMAC signed) + auth middleware
+// Token can be passed via ?t=... or cookie sv_auth
+// -------------------------
 const AUTH_SECRET =
   process.env.SV_AUTH_SECRET || process.env.LTI11_SHARED_SECRET || "dev-secret";
 
@@ -121,30 +123,6 @@ function makeAuthToken(payloadObj) {
   const payload = Buffer.from(JSON.stringify(payloadObj)).toString("base64url");
   const sig = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("base64url");
   return `${payload}.${sig}`;
-}
-
-function readAuthToken(req) {
-  // 1) query token (meest robuust in iframe)
-  const tokenFromQuery = req.query.t;
-  if (typeof tokenFromQuery === "string" && tokenFromQuery.includes(".")) {
-    return verifyAuthToken(tokenFromQuery);
-  }
-
-  // 2) Authorization header (optioneel)
-  const authHeader = req.headers.authorization || "";
-  if (authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice("Bearer ".length).trim();
-    const obj = verifyAuthToken(token);
-    if (obj) return obj;
-  }
-
-  // 3) cookie (als cookies wél werken)
-  const tokenFromCookie = req.cookies.sv_auth;
-  if (typeof tokenFromCookie === "string" && tokenFromCookie.includes(".")) {
-    return verifyAuthToken(tokenFromCookie);
-  }
-
-  return null;
 }
 
 function verifyAuthToken(token) {
@@ -167,6 +145,32 @@ function verifyAuthToken(token) {
   }
 }
 
+function readAuthToken(req) {
+  // 1) query token (most robust inside iframes)
+  const tokenFromQuery = req.query.t;
+  if (typeof tokenFromQuery === "string" && tokenFromQuery.includes(".")) {
+    const obj = verifyAuthToken(tokenFromQuery);
+    if (obj) return obj;
+  }
+
+  // 2) Authorization header (optional)
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice("Bearer ".length).trim();
+    const obj = verifyAuthToken(token);
+    if (obj) return obj;
+  }
+
+  // 3) cookie (if allowed)
+  const tokenFromCookie = req.cookies.sv_auth;
+  if (typeof tokenFromCookie === "string" && tokenFromCookie.includes(".")) {
+    const obj = verifyAuthToken(tokenFromCookie);
+    if (obj) return obj;
+  }
+
+  return null;
+}
+
 function requireAuth(req, res, next) {
   const auth = readAuthToken(req);
   if (!auth) return res.status(401).send("Not authorized");
@@ -174,9 +178,8 @@ function requireAuth(req, res, next) {
   next();
 }
 
-
 // -------------------------
-// PDF utilities
+// PDF utilities (poppler)
 // -------------------------
 function pdfPathFor(doc) {
   return path.join(PDF_DIR, `${doc}.pdf`);
@@ -206,20 +209,22 @@ async function renderPageToCache(doc, pageNum) {
 
   const outPrefix = path.join(outDir, `tmp-${pageNum}`);
 
-  // Render exact 1 pagina
+  // Render exactly one page
   await execFileAsync("pdftoppm", [
-    "-f", String(pageNum),
-    "-l", String(pageNum),
+    "-f",
+    String(pageNum),
+    "-l",
+    String(pageNum),
     "-png",
-    "-r", "144",
+    "-r",
+    "144",
     pdf,
-    outPrefix
+    outPrefix,
   ]);
 
-  // pdftoppm kan outputten als tmp-<page>-<page>.png (bv tmp-2-2.png)
-  // of tmp-<page>-1.png afhankelijk van versie.
+  // pdftoppm output naming differs by version; find the PNG dynamically
   const files = await fsp.readdir(outDir);
-  const base = path.basename(outPrefix); // bv "tmp-2"
+  const base = path.basename(outPrefix); // e.g. "tmp-2"
   const candidates = files
     .filter((f) => f.startsWith(base + "-") && f.endsWith(".png"))
     .sort();
@@ -231,18 +236,16 @@ async function renderPageToCache(doc, pageNum) {
   const generated = path.join(outDir, candidates[0]);
   const target = pageCachePath(doc, pageNum);
 
-  // Als target al bestaat, overschrijven
   await fsp.rm(target, { force: true });
   await fsp.rename(generated, target);
 
-  // Opruimen: als er om één of andere reden meerdere candidates zijn
+  // Clean up any leftovers
   for (let i = 1; i < candidates.length; i++) {
     await fsp.rm(path.join(outDir, candidates[i]), { force: true });
   }
 
   return target;
 }
-
 
 // -------------------------
 // Viewer files (served from repo)
@@ -298,43 +301,37 @@ app.post("/admin/upload", upload.single("pdf"), async (req, res) => {
 });
 
 // -------------------------
-// LTI 1.1 Launch → sets auth cookie → redirects to viewer
+// LTI 1.1 Launch → verify → set token cookie + redirect to viewer with ?t=...
+// NOTE: variable is canvasName (NOT "name") to avoid "already declared" crashes
 // -------------------------
 app.post("/lti11/launch", (req, res) => {
   try {
     verifyLti11Launch(req);
 
-    const roles = req.body.roles || "";
-    const canvasUserId = req.body.custom_canvas_user_id || req.body.user_id || "";
-
-const name =
-  req.body.lis_person_name_full ||
-  [req.body.lis_person_name_given, req.body.lis_person_name_family].filter(Boolean).join(" ") ||
-  req.body.custom_canvas_user_name ||
-  "";
-
-    const courseId = req.body.context_id || "";
-    const courseTitle = req.body.context_title || "";
-
     const docFromCustom = req.body.custom_doc;
     const docFromQuery = req.query.doc;
     const doc = docFromQuery || docFromCustom || "default";
 
-    const name =
-  req.body.lis_person_name_full ||
-  [req.body.lis_person_name_given, req.body.lis_person_name_family].filter(Boolean).join(" ") ||
-  req.body.custom_canvas_user_name ||
-  "";
+    // ✅ ID priority (as you requested)
+    const canvasUserId = req.body.custom_canvas_user_id || req.body.user_id || "";
 
-const token = makeAuthToken({
-  exp: Date.now() + 15 * 60 * 1000,
-  doc,
-  userId: canvasUserId,
-  name
-});
+    const canvasName =
+      req.body.lis_person_name_full ||
+      [req.body.lis_person_name_given, req.body.lis_person_name_family]
+        .filter(Boolean)
+        .join(" ") ||
+      req.body.custom_canvas_user_name ||
+      "";
 
+    // Only what we need for watermark (+ doc for routing)
+    const token = makeAuthToken({
+      exp: Date.now() + 15 * 60 * 1000, // 15 minutes
+      doc,
+      userId: canvasUserId,
+      name: canvasName,
+    });
 
-
+    // Cookie (optional; may be blocked in iframe)
     res.cookie("sv_auth", token, {
       httpOnly: true,
       secure: true,
@@ -342,19 +339,28 @@ const token = makeAuthToken({
       maxAge: 15 * 60 * 1000,
     });
 
+    // Token in URL is robust in Canvas iframe
     res.redirect(`/viewer/${encodeURIComponent(doc)}?t=${encodeURIComponent(token)}`);
-
   } catch (e) {
     res.status(401).send(`LTI 1.1 launch rejected: ${String(e)}`);
   }
 });
 
 // -------------------------
-// Viewer (HTML + JS)
-// Note: requires auth cookie.
+// API: "me" (for watermark) — only name + userId
+// -------------------------
+app.get("/api/me", requireAuth, (req, res) => {
+  res.json({
+    userId: req.svAuth?.userId || "",
+    name: req.svAuth?.name || "",
+  });
+});
+
+// -------------------------
+// Viewer (HTML) — requires auth
+// (Viewer HTML includes inline JS that calls API endpoints with ?t=...)
 // -------------------------
 app.get("/viewer/:doc", requireAuth, async (req, res) => {
-  // Basic hardening: allow framing only from Canvas domains
   res.setHeader(
     "Content-Security-Policy",
     "frame-ancestors 'self' https://canvas.instructure.com https://*.instructure.com"
@@ -363,12 +369,8 @@ app.get("/viewer/:doc", requireAuth, async (req, res) => {
   res.type("html").send(await readViewerFile("viewer.html"));
 });
 
-app.get("/viewer/viewer.js", async (req, res) => {
-  res.type("application/javascript").send(await readViewerFile("viewer.js"));
-});
-
 // -------------------------
-// API: manifest & pages (requires auth cookie)
+// API: manifest & pages (requires auth)
 // -------------------------
 app.get("/api/docs/:doc/manifest", requireAuth, async (req, res) => {
   try {
@@ -403,15 +405,6 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
     res.status(500).type("text").send(String(e));
   }
 });
-
-// Gives viewer the logged-in Canvas identity (for watermark)
-app.get("/api/me", requireAuth, (req, res) => {
-  res.json({
-    userId: req.svAuth?.userId || "",
-    name: req.svAuth?.name || ""
-  });
-});
-
 
 // -------------------------
 const port = process.env.PORT || 3000;

@@ -10,16 +10,65 @@
       #pages { padding: 16px; display: grid; gap: 16px; }
       img { width: 100%; height: auto; border: 1px solid #eee; }
       .note { color: #666; font-size: 14px; }
+      .err { color: #b00020; font-size: 14px; }
+      code { background:#f6f6f6; padding: 2px 4px; border-radius: 4px; }
     </style>
   </head>
   <body>
     <header>
       <div><b>Document:</b> <span id="doc"></span></div>
       <div class="note">Bij de eerste keer kan het laden even duren (renderen naar afbeeldingen).</div>
+      <div class="note">Debug: token in URL? <span id="tok"></span></div>
+      <div id="msg" class="err"></div>
     </header>
 
     <div id="pages"></div>
 
-    <script src="/viewer/viewer.js"></script>
+    <script>
+      (async function () {
+        try {
+          const parts = window.location.pathname.split("/");
+          const doc = parts[parts.length - 1];
+          document.getElementById("doc").textContent = doc || "(geen)";
+
+          const params = new URLSearchParams(window.location.search);
+          const t = params.get("t") || "";
+          document.getElementById("tok").textContent = t ? "JA" : "NEE";
+
+          const msg = document.getElementById("msg");
+          const pagesEl = document.getElementById("pages");
+
+          const manifestUrl =
+            `/api/docs/${encodeURIComponent(doc)}/manifest` +
+            (t ? `?t=${encodeURIComponent(t)}` : "");
+
+          const manifestRes = await fetch(manifestUrl, { credentials: "include" });
+
+          if (!manifestRes.ok) {
+            msg.textContent = `Kan manifest niet laden (${manifestRes.status}).`;
+            return;
+          }
+
+          const manifest = await manifestRes.json();
+          if (!manifest.pages) {
+            msg.textContent = "Manifest onverwacht: " + JSON.stringify(manifest);
+            return;
+          }
+
+          for (let i = 1; i <= manifest.pages; i++) {
+            const img = document.createElement("img");
+            img.loading = "lazy";
+            img.alt = `Pagina ${i}`;
+            img.src =
+              `/api/docs/${encodeURIComponent(doc)}/page/${i}` +
+              (t ? `?t=${encodeURIComponent(t)}` : "");
+            pagesEl.appendChild(img);
+          }
+        } catch (e) {
+          document.getElementById("msg").textContent = String(e);
+        }
+      })();
+    </script>
   </body>
 </html>
+

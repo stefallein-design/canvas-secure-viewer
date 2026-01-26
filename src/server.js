@@ -390,19 +390,29 @@ app.get("/admin/delete", async (req, res) => {
 
   await ensureDirs();
 
-  // doc can be either slug or original-ish; we canonicalize to be safe
-  const doc = canonicalDocId(req.query.doc || "");
-  if (!doc) return res.status(400).send("Missing doc");
+  // doc zoals in de URL/lijst (kan spaties/tekens bevatten)
+  const docRaw = String(req.query.doc || "").trim();
+  if (!docRaw) return res.status(400).send("Missing doc");
 
-  const pdf = path.join(PDF_DIR, `${doc}.pdf`);
-  const cache = path.join(CACHE_DIR, doc);
+  // 1) probeer exact (oude uploads)
+  const exactPdf = path.join(PDF_DIR, `${docRaw}.pdf`);
 
-  await fsp.rm(pdf, { force: true });
-  await fsp.rm(cache, { recursive: true, force: true });
+  // 2) probeer slug (nieuwe uploads)
+  const docSlug = canonicalDocId(docRaw);
+  const slugPdf = path.join(PDF_DIR, `${docSlug}.pdf`);
 
-  // back to admin list
+  // delete pdf(s)
+  await fsp.rm(exactPdf, { force: true });
+  await fsp.rm(slugPdf, { force: true });
+
+  // delete cache(s)
+  await fsp.rm(path.join(CACHE_DIR, docRaw), { recursive: true, force: true });
+  await fsp.rm(path.join(CACHE_DIR, docSlug), { recursive: true, force: true });
+
+  // terug naar admin lijst
   res.redirect(`/admin?token=${encodeURIComponent(token)}`);
 });
+
 
 
 // -------------------------

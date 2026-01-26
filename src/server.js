@@ -1,4 +1,4 @@
-// src/server.js (LTI 1.1 MVP)
+// src/server.js (LTI 1.1 + debug doc-id)
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
@@ -27,7 +27,9 @@ function buildOAuth() {
   const consumerSecret = process.env.LTI11_SHARED_SECRET;
 
   if (!consumerKey || !consumerSecret) {
-    throw new Error("Missing LTI11_CONSUMER_KEY or LTI11_SHARED_SECRET in environment variables");
+    throw new Error(
+      "Missing LTI11_CONSUMER_KEY or LTI11_SHARED_SECRET in environment variables"
+    );
   }
 
   return {
@@ -59,7 +61,7 @@ function verifyLti11Launch(req) {
   // 2) URL must include query string if present (e.g. ?doc=H1)
   const url = `${getBaseUrl(req)}${req.originalUrl}`;
 
-  // 3) For signature generation, exclude oauth_signature itself from parameters
+  // 3) Exclude oauth_signature itself from signature generation params
   const data = { ...req.body };
   const providedSigRaw = data.oauth_signature;
   delete data.oauth_signature;
@@ -91,10 +93,10 @@ app.post("/lti11/launch", (req, res) => {
     const courseId = req.body.context_id || "";
     const courseTitle = req.body.context_title || "";
 
-    // Doc id: we support ?doc=... in the launch URL OR custom_doc param
-    // If you add "?doc=H1" to the tool URL in Canvas, it arrives in the launch URL query
-    // (Canvas may also send custom params as "custom_*")
-    const doc = req.query.doc || req.body.custom_doc || "default";
+    // Doc id: support both query (?doc=H1) and Canvas custom fields (custom_doc)
+    const docFromQuery = req.query.doc;
+    const docFromCustom = req.body.custom_doc;
+    const doc = docFromQuery || docFromCustom || "default";
 
     // Create a short-lived session cookie (so later we can stream images securely)
     const session = crypto.randomBytes(18).toString("hex");
@@ -107,7 +109,10 @@ app.post("/lti11/launch", (req, res) => {
 
     res.status(200).send(`
       <h2>✅ LTI 1.1 Launch OK</h2>
-      <p><b>Doc:</b> ${doc}</p>
+      <p><b>Doc (query):</b> ${docFromQuery || ""}</p>
+      <p><b>Doc (custom):</b> ${docFromCustom || ""}</p>
+      <p><b>Doc (used):</b> ${doc}</p>
+      <hr/>
       <p><b>User:</b> ${userId}</p>
       <p><b>Roles:</b> ${roles}</p>
       <p><b>Course:</b> ${courseTitle} (${courseId})</p>

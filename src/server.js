@@ -56,20 +56,24 @@ function verifyLti11Launch(req) {
     throw new Error("Missing oauth_signature");
   }
 
-  // 2) Build the request data for oauth-1.0a
-  const url = `${getBaseUrl(req)}${req.path}`; // must match the URL Canvas POSTs to
-  const requestData = { url, method: "POST", data: { ...req.body } };
+  // 2) URL must include query string if present (e.g. ?doc=H1)
+  const url = `${getBaseUrl(req)}${req.originalUrl}`;
 
-  // 3) Validate signature (oauth-1.0a will compute signature and compare)
-  // oauth-1.0a doesn't have a built-in "validate" method, so we compute and compare:
-  const computed = oauth.authorize(requestData); // { oauth_signature, ... }
+  // 3) For signature generation, exclude oauth_signature itself from parameters
+  const data = { ...req.body };
+  const providedSigRaw = data.oauth_signature;
+  delete data.oauth_signature;
+
+  const requestData = { url, method: "POST", data };
+
+  // 4) Compute signature and compare
+  const computed = oauth.authorize(requestData);
   const computedSig = computed.oauth_signature;
-  const providedSig = req.body.oauth_signature;
 
-  // Canvas may URL-encode signature; normalize
-  const prov = decodeURIComponent(providedSig);
+  // Canvas often percent-encodes the signature
+  const providedSig = decodeURIComponent(providedSigRaw);
 
-  if (computedSig !== prov && computedSig !== providedSig) {
+  if (computedSig !== providedSig && computedSig !== providedSigRaw) {
     throw new Error("OAuth signature mismatch");
   }
 

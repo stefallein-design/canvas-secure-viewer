@@ -1,4 +1,4 @@
-// src/server.js (LTI 1.1 + secure image streaming + admin PDF upload + /api/me for watermark + poppler debug)
+// src/server.js (LTI 1.1 + secure image streaming + admin PDF upload + /api/me watermark + slug-based doc ids)
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
@@ -13,8 +13,6 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 
 const app = express();
-
-// Canvas LTI 1.1 launch is a POST (form-encoded)
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cookieParser());
@@ -30,6 +28,32 @@ async function ensureDirs() {
   await fsp.mkdir(CACHE_DIR, { recursive: true });
 }
 ensureDirs().catch(() => {});
+
+// -------------------------
+// Slug / canonical doc id
+// -------------------------
+function canonicalDocId(input) {
+  // decode if it's URL-encoded (viewer path like wiskunde%201%20-%20integraal)
+  let s = String(input || "");
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    // ignore decode errors
+  }
+
+  s = s
+    .trim()
+    .toLowerCase()
+    // remove common HTML entity patterns that sometimes sneak in
+    .replace(/&\d+/g, "")       // e.g. &201
+    .replace(/&[a-z]+;/g, "")   // e.g. &nbsp;
+    // make file-safe slug
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return s || "default";
+}
 
 // -------------------------
 // Basics / health
@@ -98,7 +122,6 @@ function verifyLti11Launch(req) {
   delete data.oauth_signature;
 
   const requestData = { url, method: "POST", data };
-
   const computed = oauth.authorize(requestData);
   const computedSig = computed.oauth_signature;
 
@@ -181,13 +204,16 @@ function requireAuth(req, res, next) {
 // -------------------------
 // PDF utilities (poppler)
 // -------------------------
-function pdfPathFor(doc) {
+function pdfPathFor(docRaw) {
+  const doc = canonicalDocId(docRaw);
   return path.join(PDF_DIR, `${doc}.pdf`);
 }
-function docCacheDir(doc) {
+function docCacheDir(docRaw) {
+  const doc = canonicalDocId(docRaw);
   return path.join(CACHE_DIR, doc);
 }
-function pageCachePath(doc, pageNum) {
+function pageCachePath(docRaw, pageNum) {
+  const doc = canonicalDocId(docRaw);
   return path.join(docCacheDir(doc), `page-${pageNum}.png`);
 }
 
@@ -200,7 +226,8 @@ async function getPdfPageCount(pdfPath) {
   return pages;
 }
 
-async function renderPageToCache(doc, pageNum) {
+async function renderPageToCache(docRaw, pageNum) {
+  const doc = canonicalDocId(docRaw);
   const pdf = pdfPathFor(doc);
   if (!fs.existsSync(pdf)) throw new Error(`PDF not found for doc '${doc}'`);
 
@@ -257,6 +284,7 @@ async function readViewerFile(relPath) {
 
 // -------------------------
 // Admin upload (protected by token)
+// Upload doc id is ALSO canonicalized to the same slug used by Canvas
 // -------------------------
 app.get("/admin/upload", async (req, res) => {
   const token = req.query.token || "";
@@ -266,11 +294,11 @@ app.get("/admin/upload", async (req, res) => {
 
   res.send(`
     <h2>Upload PDF</h2>
-    <p>Gebruik exact dezelfde Doc ID als je in Canvas bij <code>custom_doc</code> zet (bv. H1).</p>
+    <p><b>Doc ID</b> mag een titel zijn (met spaties). Wij maken er automatisch een veilige slug van.</p>
     <form method="POST" action="/admin/upload?token=${encodeURIComponent(
       token
     )}" enctype="multipart/form-data">
-      <label>Doc ID: <input name="doc" required /></label><br/><br/>
+      <label>Doc ID / titel: <input name="doc" required /></label><br/><br/>
       <input type="file" name="pdf" accept="application/pdf" required /><br/><br/>
       <button type="submit">Upload</button>
     </form>
@@ -285,24 +313,24 @@ app.post("/admin/upload", upload.single("pdf"), async (req, res) => {
     return res.status(403).send("Forbidden");
   }
 
-  const doc = (req.body.doc || "").trim();
-  if (!doc) return res.status(400).send("Missing doc");
+  const docSlug = canonicalDocId(req.body.doc);
+  if (!docSlug) return res.status(400).send("Missing doc");
   if (!req.file) return res.status(400).send("Missing pdf file");
 
   await ensureDirs();
 
-  const target = pdfPathFor(doc);
+  const target = pdfPathFor(docSlug);
   await fsp.writeFile(target, req.file.buffer);
 
   // Clear cache for this doc
-  await fsp.rm(docCacheDir(doc), { recursive: true, force: true });
+  await fsp.rm(docCacheDir(docSlug), { recursive: true, force: true });
 
-  res.send(`✅ Uploaded ${doc}.pdf and cleared cache.`);
+  res.send(`✅ Uploaded ${docSlug}.pdf and cleared cache.`);
 });
 
 // -------------------------
 // LTI 1.1 Launch → verify → set token cookie + redirect to viewer with ?t=...
-// NOTE: variable is canvasName (NOT "name") to avoid "already declared" crashes
+// Doc is canonicalized so Canvas encoding never breaks lookup
 // -------------------------
 app.post("/lti11/launch", (req, res) => {
   try {
@@ -310,9 +338,9 @@ app.post("/lti11/launch", (req, res) => {
 
     const docFromCustom = req.body.custom_doc;
     const docFromQuery = req.query.doc;
-    const doc = docFromQuery || docFromCustom || "default";
+    const doc = canonicalDocId(docFromQuery || docFromCustom || "default");
 
-    // ✅ ID priority (as you requested)
+    // ID priority (as you requested)
     const canvasUserId = req.body.custom_canvas_user_id || req.body.user_id || "";
 
     const canvasName =
@@ -323,15 +351,14 @@ app.post("/lti11/launch", (req, res) => {
       req.body.custom_canvas_user_name ||
       "";
 
-    // Only what we need for watermark (+ doc for routing)
     const token = makeAuthToken({
-      exp: Date.now() + 15 * 60 * 1000, // 15 minutes
+      exp: Date.now() + 15 * 60 * 1000,
       doc,
       userId: canvasUserId,
       name: canvasName,
     });
 
-    // Cookie (optional; may be blocked in iframe)
+    // Cookie (optional)
     res.cookie("sv_auth", token, {
       httpOnly: true,
       secure: true,
@@ -339,7 +366,6 @@ app.post("/lti11/launch", (req, res) => {
       maxAge: 15 * 60 * 1000,
     });
 
-    // Token in URL is robust in Canvas iframe
     res.redirect(`/viewer/${encodeURIComponent(doc)}?t=${encodeURIComponent(token)}`);
   } catch (e) {
     res.status(401).send(`LTI 1.1 launch rejected: ${String(e)}`);
@@ -358,9 +384,9 @@ app.get("/api/me", requireAuth, (req, res) => {
 
 // -------------------------
 // Viewer (HTML) — requires auth
-// (Viewer HTML includes inline JS that calls API endpoints with ?t=...)
 // -------------------------
 app.get("/viewer/:doc", requireAuth, async (req, res) => {
+  // Allow framing only from Canvas domains
   res.setHeader(
     "Content-Security-Policy",
     "frame-ancestors 'self' https://canvas.instructure.com https://*.instructure.com"
@@ -371,14 +397,19 @@ app.get("/viewer/:doc", requireAuth, async (req, res) => {
 
 // -------------------------
 // API: manifest & pages (requires auth)
+// IMPORTANT: doc param is canonicalized so URLs with weird encoding still map correctly
 // -------------------------
 app.get("/api/docs/:doc/manifest", requireAuth, async (req, res) => {
   try {
-    const doc = req.params.doc;
+    const doc = canonicalDocId(req.params.doc);
     const pdf = pdfPathFor(doc);
 
     if (!fs.existsSync(pdf)) {
-      return res.status(404).json({ error: "PDF not found. Upload it in /admin/upload" });
+      return res.status(404).json({
+        error:
+          "PDF not found. Upload it in /admin/upload. (Doc ID is slug-normalized automatically.)",
+        doc,
+      });
     }
 
     const pages = await getPdfPageCount(pdf);
@@ -390,7 +421,7 @@ app.get("/api/docs/:doc/manifest", requireAuth, async (req, res) => {
 
 app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
   try {
-    const doc = req.params.doc;
+    const doc = canonicalDocId(req.params.doc);
     const n = parseInt(req.params.n, 10);
     if (!Number.isFinite(n) || n < 1) return res.status(400).send("Invalid page number");
 
@@ -409,3 +440,4 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
 // -------------------------
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on port ${port}`));
+

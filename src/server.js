@@ -313,14 +313,22 @@ app.post("/lti11/launch", (req, res) => {
     const docFromQuery = req.query.doc;
     const doc = docFromQuery || docFromCustom || "default";
 
-    const token = makeAuthToken({
-      exp: Date.now() + 15 * 60 * 1000, // 15 min
-      doc,
-      userId,
-      roles,
-      courseId,
-      courseTitle,
-    });
+    const name =
+  req.body.lis_person_name_full ||
+  [req.body.lis_person_name_given, req.body.lis_person_name_family].filter(Boolean).join(" ") ||
+  req.body.custom_canvas_user_name ||
+  "";
+
+const token = makeAuthToken({
+  exp: Date.now() + 15 * 60 * 1000, // 15 min
+  doc,
+  userId,
+  name,
+  roles,
+  courseId,
+  courseTitle,
+});
+
 
     res.cookie("sv_auth", token, {
       httpOnly: true,
@@ -389,6 +397,17 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
   } catch (e) {
     res.status(500).type("text").send(String(e));
   }
+});
+
+// Gives viewer the logged-in Canvas identity (for watermark)
+app.get("/api/me", requireAuth, (req, res) => {
+  res.json({
+    userId: req.svAuth?.userId || "",
+    name: req.svAuth?.name || "",
+    roles: req.svAuth?.roles || "",
+    courseTitle: req.svAuth?.courseTitle || "",
+    courseId: req.svAuth?.courseId || ""
+  });
 });
 
 // -------------------------

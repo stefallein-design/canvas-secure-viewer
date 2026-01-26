@@ -29,13 +29,13 @@
         user-drag: none;
       }
 
-      /* Watermark overlay: boven alles, niet klikbaar */
+      /* Watermark overlay: boven alles, niet klikbaar, iets lichter */
       #wm {
         position: fixed;
         inset: 0;
-        z-index: 9999;          /* boven images */
-        pointer-events: none;   /* stoort niet */
-        opacity: 0.14;
+        z-index: 9999;
+        pointer-events: none;
+        opacity: 0.09;          /* lichter dan voorheen */
         transform: rotate(-18deg);
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -43,7 +43,7 @@
         align-items: center;
         justify-items: center;
         text-align: center;
-        font-size: 22px;
+        font-size: 20px;
         line-height: 1.35;
         padding: 24px;
         gap: 10px;
@@ -68,25 +68,14 @@
     <div id="pages"></div>
 
     <script>
-      // --- Blokkeer rechtermuisklik (context menu)
-      document.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-      });
+      // Rechtermuisklik blokkeren
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-      // --- Blokkeer typische "save/print" shortcuts (basis)
+      // Ctrl/Cmd+S en Ctrl/Cmd+P blokkeren
       document.addEventListener("keydown", (e) => {
         const key = (e.key || "").toLowerCase();
-
-        // Ctrl+S / Cmd+S
-        if ((e.ctrlKey || e.metaKey) && key === "s") {
+        if ((e.ctrlKey || e.metaKey) && (key === "s" || key === "p")) {
           e.preventDefault();
-          return;
-        }
-
-        // Ctrl+P / Cmd+P
-        if ((e.ctrlKey || e.metaKey) && key === "p") {
-          e.preventDefault();
-          return;
         }
       });
 
@@ -94,8 +83,6 @@
         const wmEl = document.getElementById("wm");
         wmEl.innerHTML = "";
 
-        // Genoeg cellen om alle schermgroottes te vullen
-        // (grid columns/rows in CSS doen de rest)
         const cells = 18; // 3 kolommen x 6 rijen
         for (let i = 0; i < cells; i++) {
           const cell = document.createElement("div");
@@ -117,24 +104,22 @@
           const msg = document.getElementById("msg");
           const pagesEl = document.getElementById("pages");
 
-          // --- Haal identiteit op voor watermark
+          // Identiteit ophalen (alleen name + userId)
           const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
           let me = { userId: "", name: "" };
-
           try {
             const meRes = await fetch(meUrl, { credentials: "include" });
             if (meRes.ok) me = await meRes.json();
           } catch (_) {}
 
+          // Watermark: enkel Naam + Canvas user_id
           const wmText =
-            `INZICHT • NIET DELEN\n` +
-            `Doc: ${doc}\n` +
-            `User: ${me.userId || "?"}\n` +
-            `Naam: ${me.name || "?"}`;
+            `Naam: ${me.name || "?"}\n` +
+            `ID: ${me.userId || "?"}`;
 
           makeTiledWatermark(wmText);
 
-          // --- Manifest ophalen
+          // Manifest ophalen
           const manifestUrl =
             `/api/docs/${encodeURIComponent(doc)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
@@ -151,7 +136,7 @@
             return;
           }
 
-          // --- Pagina's laden als images
+          // Pagina's laden
           for (let i = 1; i <= manifest.pages; i++) {
             const img = document.createElement("img");
             img.loading = "lazy";

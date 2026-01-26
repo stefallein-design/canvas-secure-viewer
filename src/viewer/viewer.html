@@ -6,29 +6,21 @@
     <title>Secure Viewer</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 0; }
-      header {
-        position: sticky;
-        top: 0;
-        background: #fff;
-        padding: 12px 16px;
-        border-bottom: 1px solid #eee;
-        z-index: 2;
-      }
+
       #pages { padding: 16px; display: grid; gap: 16px; }
       img { width: 100%; height: auto; border: 1px solid #eee; }
-      .note { color: #666; font-size: 14px; }
-      .err { color: #b00020; font-size: 14px; }
 
+      /* Geen tekstselectie / slepen */
       body { -webkit-user-select: none; user-select: none; }
       img { -webkit-user-drag: none; user-drag: none; }
 
-      /* Watermark overlay: boven alles, niet klikbaar, lichter */
+      /* Watermark overlay: boven alles, niet klikbaar, licht */
       #wm {
         position: fixed;
         inset: 0;
         z-index: 9999;
         pointer-events: none;
-        opacity: 0.075;          /* iets lichter */
+        opacity: 0.075;
         transform: rotate(-18deg);
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -42,23 +34,22 @@
         gap: 10px;
       }
       .wm-cell { white-space: pre-wrap; padding: 8px 12px; }
+
+      /* Eventuele foutmelding (onzichtbaar tot nodig) */
+      #msg { padding: 12px 16px; color: #b00020; font-size: 14px; }
     </style>
   </head>
 
   <body>
     <div id="wm"></div>
-
-    <header>
-      <div><b>Document:</b> <span id="doc"></span></div>
-      <div class="note">Bij de eerste keer kan het laden even duren (renderen naar afbeeldingen).</div>
-      <div id="msg" class="err"></div>
-    </header>
-
+    <div id="msg"></div>
     <div id="pages"></div>
 
     <script>
+      // Rechtermuisklik blokkeren
       document.addEventListener("contextmenu", (e) => e.preventDefault());
 
+      // Ctrl/Cmd+S en Ctrl/Cmd+P blokkeren
       document.addEventListener("keydown", (e) => {
         const key = (e.key || "").toLowerCase();
         if ((e.ctrlKey || e.metaKey) && (key === "s" || key === "p")) e.preventDefault();
@@ -78,9 +69,9 @@
 
       (async function () {
         try {
+          // doc zit in de URL, maar we tonen hem nergens
           const parts = window.location.pathname.split("/");
           const doc = parts[parts.length - 1];
-          document.getElementById("doc").textContent = doc || "(geen)";
 
           const params = new URLSearchParams(window.location.search);
           const t = params.get("t") || "";
@@ -88,7 +79,7 @@
           const msg = document.getElementById("msg");
           const pagesEl = document.getElementById("pages");
 
-          // only name + userId
+          // Identiteit ophalen (alleen name + userId)
           const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
           let me = { userId: "", name: "" };
           try {
@@ -96,25 +87,27 @@
             if (meRes.ok) me = await meRes.json();
           } catch (_) {}
 
-          const wmText = `Naam: ${me.name || "?"}\nID: ${me.userId || "?"}`;
-          makeTiledWatermark(wmText);
+          // Watermark: enkel Naam + ID
+          makeTiledWatermark(`Naam: ${me.name || "?"}\nID: ${me.userId || "?"}`);
 
+          // Manifest ophalen
           const manifestUrl =
             `/api/docs/${encodeURIComponent(doc)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
 
           const manifestRes = await fetch(manifestUrl, { credentials: "include" });
           if (!manifestRes.ok) {
-            msg.textContent = `Kan manifest niet laden (${manifestRes.status}).`;
+            msg.textContent = `Kan document niet laden (${manifestRes.status}).`;
             return;
           }
 
           const manifest = await manifestRes.json();
           if (!manifest.pages) {
-            msg.textContent = "Manifest onverwacht: " + JSON.stringify(manifest);
+            msg.textContent = "Documentfout.";
             return;
           }
 
+          // Pagina's laden
           for (let i = 1; i <= manifest.pages; i++) {
             const img = document.createElement("img");
             img.loading = "lazy";
@@ -125,11 +118,9 @@
             pagesEl.appendChild(img);
           }
         } catch (e) {
-          document.getElementById("msg").textContent = String(e);
+          document.getElementById("msg").textContent = "Er ging iets mis.";
         }
       })();
     </script>
   </body>
 </html>
-
-

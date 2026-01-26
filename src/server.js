@@ -305,7 +305,7 @@ app.post("/lti11/launch", (req, res) => {
     verifyLti11Launch(req);
 
     const roles = req.body.roles || "";
-    const userId = req.body.user_id || "";
+    const canvasUserId = req.body.user_id || "";
     const courseId = req.body.context_id || "";
     const courseTitle = req.body.context_title || "";
 
@@ -320,9 +320,9 @@ app.post("/lti11/launch", (req, res) => {
   "";
 
 const token = makeAuthToken({
-  exp: Date.now() + 15 * 60 * 1000, // 15 min
+  exp: Date.now() + 15 * 60 * 1000,
   doc,
-  userId,
+  userId: canvasUserId,
   name,
   roles,
   courseId,
@@ -403,12 +403,10 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({
     userId: req.svAuth?.userId || "",
-    name: req.svAuth?.name || "",
-    roles: req.svAuth?.roles || "",
-    courseTitle: req.svAuth?.courseTitle || "",
-    courseId: req.svAuth?.courseId || ""
+    name: req.svAuth?.name || ""
   });
 });
+
 
 // -------------------------
 const port = process.env.PORT || 3000;

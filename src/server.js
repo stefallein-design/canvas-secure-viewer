@@ -124,14 +124,39 @@ function makeAuthToken(payloadObj) {
 }
 
 function readAuthToken(req) {
-  const token = req.cookies.sv_auth;
-  if (!token) return null;
+  // 1) query token (meest robuust in iframe)
+  const tokenFromQuery = req.query.t;
+  if (typeof tokenFromQuery === "string" && tokenFromQuery.includes(".")) {
+    return verifyAuthToken(tokenFromQuery);
+  }
 
+  // 2) Authorization header (optioneel)
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice("Bearer ".length).trim();
+    const obj = verifyAuthToken(token);
+    if (obj) return obj;
+  }
+
+  // 3) cookie (als cookies wél werken)
+  const tokenFromCookie = req.cookies.sv_auth;
+  if (typeof tokenFromCookie === "string" && tokenFromCookie.includes(".")) {
+    return verifyAuthToken(tokenFromCookie);
+  }
+
+  return null;
+}
+
+function verifyAuthToken(token) {
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return null;
 
   const expected = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("base64url");
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch {
+    return null;
+  }
 
   try {
     const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
@@ -148,6 +173,7 @@ function requireAuth(req, res, next) {
   req.svAuth = auth;
   next();
 }
+
 
 // -------------------------
 // PDF utilities
@@ -285,7 +311,8 @@ app.post("/lti11/launch", (req, res) => {
       maxAge: 15 * 60 * 1000,
     });
 
-    res.redirect(`/viewer/${encodeURIComponent(doc)}`);
+    res.redirect(`/viewer/${encodeURIComponent(doc)}?t=${encodeURIComponent(token)}`);
+
   } catch (e) {
     res.status(401).send(`LTI 1.1 launch rejected: ${String(e)}`);
   }
@@ -305,7 +332,7 @@ app.get("/viewer/:doc", requireAuth, async (req, res) => {
   res.type("html").send(await readViewerFile("viewer.html"));
 });
 
-app.get("/viewer/viewer.js", requireAuth, async (req, res) => {
+app.get("/viewer/viewer.js", async (req, res) => {
   res.type("application/javascript").send(await readViewerFile("viewer.js"));
 });
 

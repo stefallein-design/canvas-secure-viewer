@@ -305,7 +305,14 @@ app.post("/lti11/launch", (req, res) => {
     verifyLti11Launch(req);
 
     const roles = req.body.roles || "";
-    const canvasUserId = req.body.user_id || "";
+    const canvasUserId = req.body.custom_canvas_user_id || req.body.user_id || "";
+
+const name =
+  req.body.lis_person_name_full ||
+  [req.body.lis_person_name_given, req.body.lis_person_name_family].filter(Boolean).join(" ") ||
+  req.body.custom_canvas_user_name ||
+  "";
+
     const courseId = req.body.context_id || "";
     const courseTitle = req.body.context_title || "";
 
@@ -323,11 +330,9 @@ const token = makeAuthToken({
   exp: Date.now() + 15 * 60 * 1000,
   doc,
   userId: canvasUserId,
-  name,
-  roles,
-  courseId,
-  courseTitle,
+  name
 });
+
 
 
     res.cookie("sv_auth", token, {

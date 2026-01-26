@@ -6,25 +6,78 @@
     <title>Secure Viewer</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 0; }
-      header { position: sticky; top: 0; background: #fff; padding: 12px 16px; border-bottom: 1px solid #eee; }
+      header { position: sticky; top: 0; background: #fff; padding: 12px 16px; border-bottom: 1px solid #eee; z-index: 5; }
       #pages { padding: 16px; display: grid; gap: 16px; }
       img { width: 100%; height: auto; border: 1px solid #eee; }
       .note { color: #666; font-size: 14px; }
       .err { color: #b00020; font-size: 14px; }
-      code { background:#f6f6f6; padding: 2px 4px; border-radius: 4px; }
+
+      /* Maak selecteren + slepen lastiger */
+      body {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      img {
+        -webkit-user-drag: none;
+        user-drag: none;
+        pointer-events: none; /* voorkomt right-click op image zelf */
+      }
+
+      /* Watermark */
+      #wm {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        display: grid;
+        place-items: center;
+        opacity: 0.14;
+        transform: rotate(-18deg);
+        font-size: 26px;
+        line-height: 1.4;
+        text-align: center;
+        white-space: pre-wrap;
+      }
+
+      /* Zorg dat header en pagina’s boven watermark blijven */
+      header, #pages { position: relative; z-index: 5; }
     </style>
   </head>
+
   <body>
+    <div id="wm"></div>
+
     <header>
       <div><b>Document:</b> <span id="doc"></span></div>
       <div class="note">Bij de eerste keer kan het laden even duren (renderen naar afbeeldingen).</div>
-      <div class="note">Debug: token in URL? <span id="tok"></span></div>
       <div id="msg" class="err"></div>
     </header>
 
     <div id="pages"></div>
 
     <script>
+      // --- Blokkeer rechtermuisklik (context menu)
+      document.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+      });
+
+      // --- Blokkeer typische "save/print" shortcuts (basis)
+      document.addEventListener("keydown", (e) => {
+        const key = (e.key || "").toLowerCase();
+
+        // Ctrl+S / Cmd+S
+        if ((e.ctrlKey || e.metaKey) && key === "s") {
+          e.preventDefault();
+          return;
+        }
+
+        // Ctrl+P / Cmd+P
+        if ((e.ctrlKey || e.metaKey) && key === "p") {
+          e.preventDefault();
+          return;
+        }
+      });
+
       (async function () {
         try {
           const parts = window.location.pathname.split("/");
@@ -33,17 +86,35 @@
 
           const params = new URLSearchParams(window.location.search);
           const t = params.get("t") || "";
-          document.getElementById("tok").textContent = t ? "JA" : "NEE";
 
           const msg = document.getElementById("msg");
           const pagesEl = document.getElementById("pages");
+          const wmEl = document.getElementById("wm");
 
+          // --- Haal identiteit op voor watermark
+          // (werkt met ?t=... token, dus niet afhankelijk van cookies)
+          const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
+          let me = { userId: "", name: "" };
+          try {
+            const meRes = await fetch(meUrl, { credentials: "include" });
+            if (meRes.ok) me = await meRes.json();
+          } catch (_) {}
+
+          // Watermark tekst (met doc + user id + naam)
+          const wmText =
+            `INZICHT • NIET DELEN\n` +
+            `Doc: ${doc}\n` +
+            `User: ${me.userId || "?"}\n` +
+            `Naam: ${me.name || "?"}`;
+
+          wmEl.textContent = wmText;
+
+          // --- Manifest ophalen
           const manifestUrl =
             `/api/docs/${encodeURIComponent(doc)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
 
           const manifestRes = await fetch(manifestUrl, { credentials: "include" });
-
           if (!manifestRes.ok) {
             msg.textContent = `Kan manifest niet laden (${manifestRes.status}).`;
             return;
@@ -55,6 +126,7 @@
             return;
           }
 
+          // --- Pagina's laden als images
           for (let i = 1; i <= manifest.pages; i++) {
             const img = document.createElement("img");
             img.loading = "lazy";

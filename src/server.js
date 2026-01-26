@@ -206,25 +206,43 @@ async function renderPageToCache(doc, pageNum) {
 
   const outPrefix = path.join(outDir, `tmp-${pageNum}`);
 
-  // Renders exactly one page to PNG
+  // Render exact 1 pagina
   await execFileAsync("pdftoppm", [
-    "-f",
-    String(pageNum),
-    "-l",
-    String(pageNum),
+    "-f", String(pageNum),
+    "-l", String(pageNum),
     "-png",
-    "-r",
-    "144", // resolution: 144dpi (balance quality/perf)
+    "-r", "144",
     pdf,
-    outPrefix,
+    outPrefix
   ]);
 
-  const generated = `${outPrefix}-1.png`;
+  // pdftoppm kan outputten als tmp-<page>-<page>.png (bv tmp-2-2.png)
+  // of tmp-<page>-1.png afhankelijk van versie.
+  const files = await fsp.readdir(outDir);
+  const base = path.basename(outPrefix); // bv "tmp-2"
+  const candidates = files
+    .filter((f) => f.startsWith(base + "-") && f.endsWith(".png"))
+    .sort();
+
+  if (candidates.length === 0) {
+    throw new Error(`pdftoppm produced no PNG for doc='${doc}' page=${pageNum}`);
+  }
+
+  const generated = path.join(outDir, candidates[0]);
   const target = pageCachePath(doc, pageNum);
 
+  // Als target al bestaat, overschrijven
+  await fsp.rm(target, { force: true });
   await fsp.rename(generated, target);
+
+  // Opruimen: als er om één of andere reden meerdere candidates zijn
+  for (let i = 1; i < candidates.length; i++) {
+    await fsp.rm(path.join(outDir, candidates[i]), { force: true });
+  }
+
   return target;
 }
+
 
 // -------------------------
 // Viewer files (served from repo)

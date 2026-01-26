@@ -1,4 +1,17 @@
-// src/server.js (LTI 1.1 + secure image streaming + admin PDF upload + /api/me watermark + slug-based doc ids)
+// src/server.js
+// LTI 1.1 secure PDF viewer that renders PDF pages to PNG (cached) and supports "chapter views"
+// via page ranges (custom_range or ?range=...).
+//
+// Key features:
+// - LTI 1.1 launch verification (HMAC-SHA1)
+// - Auth token (HMAC-SHA256) passed via ?t=... (and cookie fallback)
+// - Admin upload + admin list + delete
+// - Doc IDs are canonicalized (slugged) so Canvas encoding never breaks lookups
+// - Page range support: "1-10" or "1-10,20-50" or "3,7,9-12"
+// - /api/me for watermark: returns name + userId
+//
+// Requires: poppler-utils (pdfinfo, pdftoppm) installed (Docker recommended)
+
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
@@ -38,21 +51,58 @@ function canonicalDocId(input) {
   try {
     s = decodeURIComponent(s);
   } catch {
-    // ignore decode errors
+    // ignore
   }
 
   s = s
     .trim()
     .toLowerCase()
-    // remove common HTML entity patterns that sometimes sneak in
+    // remove common HTML entity patterns
     .replace(/&\d+/g, "")       // e.g. &201
     .replace(/&[a-z]+;/g, "")   // e.g. &nbsp;
-    // make file-safe slug
+    // file-safe slug
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
 
   return s || "default";
+}
+
+// -------------------------
+// Page range parsing
+// -------------------------
+function parsePageRange(rangeStr, totalPages) {
+  // Accept: "1-10" or "1-10,20-50" or "3,7,9-12"
+  if (!rangeStr) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+
+  const pages = new Set();
+  const parts = String(rangeStr)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) {
+      const n = parseInt(part, 10);
+      if (n >= 1 && n <= totalPages) pages.add(n);
+      continue;
+    }
+
+    const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10);
+      let b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      a = Math.max(1, a);
+      b = Math.min(totalPages, b);
+      for (let n = a; n <= b; n++) pages.add(n);
+    }
+  }
+
+  const list = Array.from(pages).sort((x, y) => x - y);
+  return list.length ? list : Array.from({ length: totalPages }, (_, i) => i + 1);
 }
 
 // -------------------------
@@ -73,7 +123,7 @@ app.get("/debug/poppler", async (req, res) => {
 });
 
 // -------------------------
-// Helpers
+// LTI helpers
 // -------------------------
 function getBaseUrl(req) {
   const proto = (req.headers["x-forwarded-proto"] || req.protocol).split(",")[0];
@@ -113,10 +163,9 @@ function verifyLti11Launch(req) {
     throw new Error("Missing oauth_signature");
   }
 
-  // URL must include query string if present
   const url = `${getBaseUrl(req)}${req.originalUrl}`;
 
-  // Exclude oauth_signature itself from signature generation params
+  // exclude oauth_signature
   const data = { ...req.body };
   const providedSigRaw = data.oauth_signature;
   delete data.oauth_signature;
@@ -125,7 +174,6 @@ function verifyLti11Launch(req) {
   const computed = oauth.authorize(requestData);
   const computedSig = computed.oauth_signature;
 
-  // Canvas often percent-encodes the signature
   const providedSig = decodeURIComponent(providedSigRaw);
 
   if (computedSig !== providedSig && computedSig !== providedSigRaw) {
@@ -136,7 +184,7 @@ function verifyLti11Launch(req) {
 }
 
 // -------------------------
-// Stateless auth token (HMAC signed) + auth middleware
+// Auth token (HMAC signed) + middleware
 // Token can be passed via ?t=... or cookie sv_auth
 // -------------------------
 const AUTH_SECRET =
@@ -169,7 +217,7 @@ function verifyAuthToken(token) {
 }
 
 function readAuthToken(req) {
-  // 1) query token (most robust inside iframes)
+  // 1) query token (best inside Canvas iframe)
   const tokenFromQuery = req.query.t;
   if (typeof tokenFromQuery === "string" && tokenFromQuery.includes(".")) {
     const obj = verifyAuthToken(tokenFromQuery);
@@ -184,7 +232,7 @@ function readAuthToken(req) {
     if (obj) return obj;
   }
 
-  // 3) cookie (if allowed)
+  // 3) cookie (fallback)
   const tokenFromCookie = req.cookies.sv_auth;
   if (typeof tokenFromCookie === "string" && tokenFromCookie.includes(".")) {
     const obj = verifyAuthToken(tokenFromCookie);
@@ -236,7 +284,6 @@ async function renderPageToCache(docRaw, pageNum) {
 
   const outPrefix = path.join(outDir, `tmp-${pageNum}`);
 
-  // Render exactly one page
   await execFileAsync("pdftoppm", [
     "-f",
     String(pageNum),
@@ -249,7 +296,7 @@ async function renderPageToCache(docRaw, pageNum) {
     outPrefix,
   ]);
 
-  // pdftoppm output naming differs by version; find the PNG dynamically
+  // naming differs by version; find produced PNG
   const files = await fsp.readdir(outDir);
   const base = path.basename(outPrefix); // e.g. "tmp-2"
   const candidates = files
@@ -266,7 +313,7 @@ async function renderPageToCache(docRaw, pageNum) {
   await fsp.rm(target, { force: true });
   await fsp.rename(generated, target);
 
-  // Clean up any leftovers
+  // clean leftovers
   for (let i = 1; i < candidates.length; i++) {
     await fsp.rm(path.join(outDir, candidates[i]), { force: true });
   }
@@ -275,7 +322,7 @@ async function renderPageToCache(docRaw, pageNum) {
 }
 
 // -------------------------
-// Viewer files (served from repo)
+// Viewer file
 // -------------------------
 async function readViewerFile(relPath) {
   const p = path.join(process.cwd(), "src", "viewer", relPath);
@@ -283,8 +330,7 @@ async function readViewerFile(relPath) {
 }
 
 // -------------------------
-// Admin upload (protected by token)
-// Upload doc id is ALSO canonicalized to the same slug used by Canvas
+// Admin upload
 // -------------------------
 app.get("/admin/upload", async (req, res) => {
   const token = req.query.token || "";
@@ -294,7 +340,7 @@ app.get("/admin/upload", async (req, res) => {
 
   res.send(`
     <h2>Upload PDF</h2>
-    <p><b>Doc ID</b> mag een titel zijn (met spaties). Wij maken er automatisch een veilige slug van.</p>
+    <p><b>Doc</b> mag een titel zijn; wij maken automatisch een slug (bv. "Wiskunde 1 - Integraal" → "wiskunde_1_integraal").</p>
     <form method="POST" action="/admin/upload?token=${encodeURIComponent(
       token
     )}" enctype="multipart/form-data">
@@ -322,14 +368,14 @@ app.post("/admin/upload", upload.single("pdf"), async (req, res) => {
   const target = pdfPathFor(docSlug);
   await fsp.writeFile(target, req.file.buffer);
 
-  // Clear cache for this doc
+  // clear cache for this doc
   await fsp.rm(docCacheDir(docSlug), { recursive: true, force: true });
 
   res.send(`✅ Uploaded ${docSlug}.pdf and cleared cache.`);
 });
 
 // -------------------------
-// Admin: list + delete (protected by ADMIN_UPLOAD_TOKEN)
+// Admin list + delete
 // -------------------------
 app.get("/admin", async (req, res) => {
   const token = req.query.token || "";
@@ -339,19 +385,28 @@ app.get("/admin", async (req, res) => {
 
   await ensureDirs();
 
-  const files = (await fsp.readdir(PDF_DIR)).filter((f) => f.toLowerCase().endsWith(".pdf")).sort();
+  const files = (await fsp.readdir(PDF_DIR))
+    .filter((f) => f.toLowerCase().endsWith(".pdf"))
+    .sort();
 
   const rows = files
     .map((f) => {
       const doc = f.replace(/\.pdf$/i, "");
-      const delUrl = `/admin/delete?token=${encodeURIComponent(token)}&doc=${encodeURIComponent(doc)}`;
+      const delUrl = `/admin/delete?token=${encodeURIComponent(token)}&doc=${encodeURIComponent(
+        doc
+      )}`;
+
+      // quick admin view token (5 min)
+      const adminViewToken = makeAuthToken({
+        exp: Date.now() + 5 * 60 * 1000,
+        doc,
+        userId: "ADMIN",
+        name: "Admin",
+        range: "", // full doc
+      });
+
       const viewUrl = `/viewer/${encodeURIComponent(doc)}?t=${encodeURIComponent(
-        makeAuthToken({
-          exp: Date.now() + 5 * 60 * 1000, // 5 min admin view token
-          doc,
-          userId: "ADMIN",
-          name: "Admin",
-        })
+        adminViewToken
       )}`;
 
       return `
@@ -390,34 +445,28 @@ app.get("/admin/delete", async (req, res) => {
 
   await ensureDirs();
 
-  // doc zoals in de URL/lijst (kan spaties/tekens bevatten)
   const docRaw = String(req.query.doc || "").trim();
   if (!docRaw) return res.status(400).send("Missing doc");
 
-  // 1) probeer exact (oude uploads)
-  const exactPdf = path.join(PDF_DIR, `${docRaw}.pdf`);
-
-  // 2) probeer slug (nieuwe uploads)
   const docSlug = canonicalDocId(docRaw);
+
+  // try both exact and slug (for legacy names)
+  const exactPdf = path.join(PDF_DIR, `${docRaw}.pdf`);
   const slugPdf = path.join(PDF_DIR, `${docSlug}.pdf`);
 
-  // delete pdf(s)
   await fsp.rm(exactPdf, { force: true });
   await fsp.rm(slugPdf, { force: true });
 
-  // delete cache(s)
   await fsp.rm(path.join(CACHE_DIR, docRaw), { recursive: true, force: true });
   await fsp.rm(path.join(CACHE_DIR, docSlug), { recursive: true, force: true });
 
-  // terug naar admin lijst
   res.redirect(`/admin?token=${encodeURIComponent(token)}`);
 });
 
-
-
 // -------------------------
-// LTI 1.1 Launch → verify → set token cookie + redirect to viewer with ?t=...
-// Doc is canonicalized so Canvas encoding never breaks lookup
+// LTI 1.1 Launch
+// - doc from custom_doc or ?doc=
+// - range from custom_range or ?range=
 // -------------------------
 app.post("/lti11/launch", (req, res) => {
   try {
@@ -426,6 +475,8 @@ app.post("/lti11/launch", (req, res) => {
     const docFromCustom = req.body.custom_doc;
     const docFromQuery = req.query.doc;
     const doc = canonicalDocId(docFromQuery || docFromCustom || "default");
+
+    const rangeRaw = String(req.body.custom_range || req.query.range || "").trim();
 
     // ID priority (as you requested)
     const canvasUserId = req.body.custom_canvas_user_id || req.body.user_id || "";
@@ -441,11 +492,12 @@ app.post("/lti11/launch", (req, res) => {
     const token = makeAuthToken({
       exp: Date.now() + 15 * 60 * 1000,
       doc,
+      range: rangeRaw,
       userId: canvasUserId,
       name: canvasName,
     });
 
-    // Cookie (optional)
+    // cookie (optional)
     res.cookie("sv_auth", token, {
       httpOnly: true,
       secure: true,
@@ -473,7 +525,6 @@ app.get("/api/me", requireAuth, (req, res) => {
 // Viewer (HTML) — requires auth
 // -------------------------
 app.get("/viewer/:doc", requireAuth, async (req, res) => {
-  // Allow framing only from Canvas domains
   res.setHeader(
     "Content-Security-Policy",
     "frame-ancestors 'self' https://canvas.instructure.com https://*.instructure.com"
@@ -484,7 +535,7 @@ app.get("/viewer/:doc", requireAuth, async (req, res) => {
 
 // -------------------------
 // API: manifest & pages (requires auth)
-// IMPORTANT: doc param is canonicalized so URLs with weird encoding still map correctly
+// - manifest returns pageList based on token range (no extra PDF uploads needed)
 // -------------------------
 app.get("/api/docs/:doc/manifest", requireAuth, async (req, res) => {
   try {
@@ -493,14 +544,16 @@ app.get("/api/docs/:doc/manifest", requireAuth, async (req, res) => {
 
     if (!fs.existsSync(pdf)) {
       return res.status(404).json({
-        error:
-          "PDF not found. Upload it in /admin/upload. (Doc ID is slug-normalized automatically.)",
+        error: "PDF not found. Upload it in /admin/upload.",
         doc,
       });
     }
 
-    const pages = await getPdfPageCount(pdf);
-    res.json({ doc, pages });
+    const totalPages = await getPdfPageCount(pdf);
+    const rangeRaw = String(req.svAuth?.range || "").trim();
+    const pageList = parsePageRange(rangeRaw, totalPages);
+
+    res.json({ doc, totalPages, pageList });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -511,6 +564,19 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
     const doc = canonicalDocId(req.params.doc);
     const n = parseInt(req.params.n, 10);
     if (!Number.isFinite(n) || n < 1) return res.status(400).send("Invalid page number");
+
+    // (Optional safety) If a range is set, block access to pages outside it
+    const pdf = pdfPathFor(doc);
+    if (fs.existsSync(pdf)) {
+      const totalPages = await getPdfPageCount(pdf);
+      const rangeRaw = String(req.svAuth?.range || "").trim();
+      if (rangeRaw) {
+        const allowed = new Set(parsePageRange(rangeRaw, totalPages));
+        if (!allowed.has(n)) {
+          return res.status(403).send("Forbidden (page outside allowed range)");
+        }
+      }
+    }
 
     const cached = pageCachePath(doc, n);
     if (!fs.existsSync(cached)) {
@@ -527,4 +593,5 @@ app.get("/api/docs/:doc/page/:n", requireAuth, async (req, res) => {
 // -------------------------
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on port ${port}`));
+
 

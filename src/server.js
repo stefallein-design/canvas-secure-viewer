@@ -1,5 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
+import { importJWK, exportJWK } from "jose";
 
 const app = express();
 
@@ -23,6 +24,37 @@ app.post("/lti/launch", (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
+
+// JWKS endpoint: Canvas gebruikt dit om jouw tool te vertrouwen
+app.get("/.well-known/jwks.json", async (req, res) => {
+  try {
+    const raw = process.env.TOOL_PRIVATE_JWK;
+    if (!raw) {
+      return res.status(500).json({
+        error: "TOOL_PRIVATE_JWK missing in Render environment variables"
+      });
+    }
+
+    const privateJwk = JSON.parse(raw);
+
+    // private key importeren, en daaruit public jwk exporteren
+    const key = await importJWK(privateJwk, "RS256");
+    const publicJwk = await exportJWK(key);
+
+    // exportJWK geeft soms ook private velden terug afhankelijk van key-object;
+    // daarom strippen we alles wat private kan zijn:
+    const { d, p, q, dp, dq, qi, oth, ...pub } = publicJwk;
+
+    pub.kid = privateJwk.kid;
+    pub.use = "sig";
+    pub.alg = "RS256";
+
+    res.json({ keys: [pub] });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to build JWKS", details: String(e) });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Listening on port ${port}`);
 });

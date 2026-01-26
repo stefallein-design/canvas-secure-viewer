@@ -3,9 +3,12 @@
   const doc = parts[parts.length - 1];
   document.getElementById("doc").textContent = doc;
 
-  const manifestRes = await fetch(`/api/docs/${encodeURIComponent(doc)}/manifest`, {
-    credentials: "include",
-  });
+  // token uit URL (belangrijk in Canvas iframe)
+  const params = new URLSearchParams(window.location.search);
+  const t = params.get("t") || "";
+
+  const manifestUrl = `/api/docs/${encodeURIComponent(doc)}/manifest${t ? `?t=${encodeURIComponent(t)}` : ""}`;
+  const manifestRes = await fetch(manifestUrl, { credentials: "include" });
 
   if (!manifestRes.ok) {
     document.getElementById("pages").innerHTML =
@@ -20,7 +23,8 @@
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = `Pagina ${i}`;
-    img.src = `/api/docs/${encodeURIComponent(doc)}/page/${i}`;
+    img.src = `/api/docs/${encodeURIComponent(doc)}/page/${i}${t ? `?t=${encodeURIComponent(t)}` : ""}`;
     pagesEl.appendChild(img);
   }
 })();
+

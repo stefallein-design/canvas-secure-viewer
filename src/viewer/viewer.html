@@ -20,7 +20,7 @@
         inset: 0;
         z-index: 9999;
         pointer-events: none;
-        opacity: 0.05;
+        opacity: 0.075;
         transform: rotate(-18deg);
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -35,7 +35,7 @@
       }
       .wm-cell { white-space: pre-wrap; padding: 8px 12px; }
 
-      /* Eventuele foutmelding (onzichtbaar tot nodig) */
+      /* Foutmelding (onzichtbaar tot nodig) */
       #msg { padding: 12px 16px; color: #b00020; font-size: 14px; }
     </style>
   </head>
@@ -79,7 +79,7 @@
           const msg = document.getElementById("msg");
           const pagesEl = document.getElementById("pages");
 
-          // Identiteit ophalen (alleen name + userId)
+          // Identiteit ophalen (Naam + ID)
           const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
           let me = { userId: "", name: "" };
           try {
@@ -87,10 +87,9 @@
             if (meRes.ok) me = await meRes.json();
           } catch (_) {}
 
-          // Watermark: enkel Naam + ID
           makeTiledWatermark(`Naam: ${me.name || "?"}\nID: ${me.userId || "?"}`);
 
-          // Manifest ophalen
+          // Manifest ophalen (nieuw formaat: { doc, totalPages, pageList })
           const manifestUrl =
             `/api/docs/${encodeURIComponent(doc)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
@@ -102,18 +101,20 @@
           }
 
           const manifest = await manifestRes.json();
-          if (!manifest.pages) {
+          const list = Array.isArray(manifest.pageList) ? manifest.pageList : [];
+
+          if (!list.length) {
             msg.textContent = "Documentfout.";
             return;
           }
 
-          // Pagina's laden
-          for (let i = 1; i <= manifest.pages; i++) {
+          // Alleen de pagina's uit pageList laden (range support)
+          for (const pageNum of list) {
             const img = document.createElement("img");
             img.loading = "lazy";
-            img.alt = `Pagina ${i}`;
+            img.alt = `Pagina ${pageNum}`;
             img.src =
-              `/api/docs/${encodeURIComponent(doc)}/page/${i}` +
+              `/api/docs/${encodeURIComponent(doc)}/page/${pageNum}` +
               (t ? `?t=${encodeURIComponent(t)}` : "");
             pagesEl.appendChild(img);
           }
@@ -124,3 +125,4 @@
     </script>
   </body>
 </html>
+

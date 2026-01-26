@@ -1,0 +1,16 @@
+{
+  "name": "canvas-secure-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "jose": "^5.9.6",
+    "node-fetch": "^3.3.2"
+  }
+}

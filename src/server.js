@@ -329,6 +329,83 @@ app.post("/admin/upload", upload.single("pdf"), async (req, res) => {
 });
 
 // -------------------------
+// Admin: list + delete (protected by ADMIN_UPLOAD_TOKEN)
+// -------------------------
+app.get("/admin", async (req, res) => {
+  const token = req.query.token || "";
+  if (!process.env.ADMIN_UPLOAD_TOKEN || token !== process.env.ADMIN_UPLOAD_TOKEN) {
+    return res.status(403).send("Forbidden");
+  }
+
+  await ensureDirs();
+
+  const files = (await fsp.readdir(PDF_DIR)).filter((f) => f.toLowerCase().endsWith(".pdf")).sort();
+
+  const rows = files
+    .map((f) => {
+      const doc = f.replace(/\.pdf$/i, "");
+      const delUrl = `/admin/delete?token=${encodeURIComponent(token)}&doc=${encodeURIComponent(doc)}`;
+      const viewUrl = `/viewer/${encodeURIComponent(doc)}?t=${encodeURIComponent(
+        makeAuthToken({
+          exp: Date.now() + 5 * 60 * 1000, // 5 min admin view token
+          doc,
+          userId: "ADMIN",
+          name: "Admin",
+        })
+      )}`;
+
+      return `
+        <tr>
+          <td><code>${doc}</code></td>
+          <td><a href="${viewUrl}" target="_blank" rel="noopener">Open viewer</a></td>
+          <td><a href="${delUrl}" onclick="return confirm('Delete ${doc}.pdf?')">Delete</a></td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  res.type("html").send(`
+    <h2>Admin – PDF Library</h2>
+    <p><a href="/admin/upload?token=${encodeURIComponent(token)}">➕ Upload new PDF</a></p>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Doc ID (slug / filename)</th>
+          <th>Viewer</th>
+          <th>Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows || `<tr><td colspan="3">No PDFs found.</td></tr>`}
+      </tbody>
+    </table>
+  `);
+});
+
+app.get("/admin/delete", async (req, res) => {
+  const token = req.query.token || "";
+  if (!process.env.ADMIN_UPLOAD_TOKEN || token !== process.env.ADMIN_UPLOAD_TOKEN) {
+    return res.status(403).send("Forbidden");
+  }
+
+  await ensureDirs();
+
+  // doc can be either slug or original-ish; we canonicalize to be safe
+  const doc = canonicalDocId(req.query.doc || "");
+  if (!doc) return res.status(400).send("Missing doc");
+
+  const pdf = path.join(PDF_DIR, `${doc}.pdf`);
+  const cache = path.join(CACHE_DIR, doc);
+
+  await fsp.rm(pdf, { force: true });
+  await fsp.rm(cache, { recursive: true, force: true });
+
+  // back to admin list
+  res.redirect(`/admin?token=${encodeURIComponent(token)}`);
+});
+
+
+// -------------------------
 // LTI 1.1 Launch → verify → set token cookie + redirect to viewer with ?t=...
 // Doc is canonicalized so Canvas encoding never breaks lookup
 // -------------------------

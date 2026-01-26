@@ -1,173 +1,121 @@
-// src/server.js
+// src/server.js (LTI 1.1 MVP)
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
-import { importJWK, exportJWK, jwtVerify, createRemoteJWKSet } from "jose";
+import OAuth from "oauth-1.0a";
 
 const app = express();
 
-// Body parsers (Canvas stuurt vaak form-encoded POSTs)
+// Canvas LTI 1.1 launch is a POST (form-encoded)
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cookieParser());
 
-// -------------------------
-// Health check
-// -------------------------
 app.get("/", (req, res) => {
-  res.status(200).send("OK - tool is running");
+  res.status(200).send("OK - tool is running (LTI 1.1 mode)");
 });
 
-// -------------------------
-// Tool JWKS endpoint (publieke sleutel van jouw tool)
-// Canvas leest dit om jouw tool te vertrouwen (signing keys)
-// -------------------------
-app.get("/.well-known/jwks.json", async (req, res) => {
-  try {
-    const raw = process.env.TOOL_PRIVATE_JWK;
-    if (!raw) {
-      return res.status(500).json({
-        error: "TOOL_PRIVATE_JWK missing in Render environment variables",
-      });
-    }
+// Helpers
+function getBaseUrl(req) {
+  // Render is behind a proxy; respect forwarded proto
+  const proto = (req.headers["x-forwarded-proto"] || req.protocol).split(",")[0];
+  return `${proto}://${req.get("host")}`;
+}
 
-    const privateJwk = JSON.parse(raw);
+function buildOAuth() {
+  const consumerKey = process.env.LTI11_CONSUMER_KEY;
+  const consumerSecret = process.env.LTI11_SHARED_SECRET;
 
-    // private key importeren, en daaruit public jwk exporteren
-    const key = await importJWK(privateJwk, "RS256");
-    const jwk = await exportJWK(key);
-
-    // Strip private velden (veiligheidsmaatregel)
-    const { d, p, q, dp, dq, qi, oth, ...pub } = jwk;
-
-    pub.kid = privateJwk.kid;
-    pub.use = "sig";
-    pub.alg = "RS256";
-
-    res.json({ keys: [pub] });
-  } catch (e) {
-    res.status(500).json({ error: "Failed to build JWKS", details: String(e) });
-  }
-});
-
-// -------------------------
-// Canvas JWKS (om Canvas id_token te verifiëren)
-// -------------------------
-const canvasJwksUrl =
-  process.env.CANVAS_JWKS_URL || "https://sso.canvaslms.com/api/lti/security/jwks";
-const canvasJwks = createRemoteJWKSet(new URL(canvasJwksUrl));
-
-// -------------------------
-// OIDC initiation endpoint
-// Canvas roept dit aan om de login-flow te starten
-// -------------------------
-app.get("/lti/oidc/init", (req, res) => {
-  const { iss, login_hint, lti_message_hint, client_id, target_link_uri } =
-    req.query;
-
-  if (!iss || !login_hint || !lti_message_hint || !client_id || !target_link_uri) {
-    return res.status(400).send("Missing required OIDC params");
+  if (!consumerKey || !consumerSecret) {
+    throw new Error("Missing LTI11_CONSUMER_KEY or LTI11_SHARED_SECRET in environment variables");
   }
 
-  // state & nonce beschermen tegen replay/CSRF
-  const state = crypto.randomBytes(16).toString("hex");
-  const nonce = crypto.randomBytes(16).toString("hex");
+  return {
+    consumerKey,
+    oauth: new OAuth({
+      consumer: { key: consumerKey, secret: consumerSecret },
+      signature_method: "HMAC-SHA1",
+      hash_function(baseString, key) {
+        return crypto.createHmac("sha1", key).update(baseString).digest("base64");
+      },
+    }),
+  };
+}
 
-  // Bewaar state/nonce tijdelijk in cookies (MVP)
-  // SameSite=None is nodig voor iframe-context in Canvas
-  res.cookie("lti_state", state, { httpOnly: true, secure: true, sameSite: "none" });
-  res.cookie("lti_nonce", nonce, { httpOnly: true, secure: true, sameSite: "none" });
+function verifyLti11Launch(req) {
+  const { consumerKey, oauth } = buildOAuth();
 
-  // Canvas OIDC authorize endpoint (Canvas cloud)
-  const authorizeUrl = "https://sso.canvaslms.com/api/lti/authorize_redirect";
+  // 1) Check required LTI fields
+  if (req.body.lti_message_type !== "basic-lti-launch-request") {
+    throw new Error("Not a basic LTI launch request");
+  }
+  if (!req.body.oauth_consumer_key || req.body.oauth_consumer_key !== consumerKey) {
+    throw new Error("Invalid oauth_consumer_key");
+  }
+  if (!req.body.oauth_signature) {
+    throw new Error("Missing oauth_signature");
+  }
 
-  // redirect_uri = jouw launch endpoint
-  const redirectUri = `${req.protocol}://${req.get("host")}/lti/launch`;
+  // 2) Build the request data for oauth-1.0a
+  const url = `${getBaseUrl(req)}${req.path}`; // must match the URL Canvas POSTs to
+  const requestData = { url, method: "POST", data: { ...req.body } };
 
-  const params = new URLSearchParams({
-    scope: "openid",
-    response_type: "id_token",
-    response_mode: "form_post",
-    prompt: "none",
-    client_id: String(client_id),
-    redirect_uri: redirectUri,
-    login_hint: String(login_hint),
-    state,
-    nonce,
-    lti_message_hint: String(lti_message_hint),
-  });
+  // 3) Validate signature (oauth-1.0a will compute signature and compare)
+  // oauth-1.0a doesn't have a built-in "validate" method, so we compute and compare:
+  const computed = oauth.authorize(requestData); // { oauth_signature, ... }
+  const computedSig = computed.oauth_signature;
+  const providedSig = req.body.oauth_signature;
 
-  res.redirect(`${authorizeUrl}?${params.toString()}`);
-});
+  // Canvas may URL-encode signature; normalize
+  const prov = decodeURIComponent(providedSig);
 
-// -------------------------
-// Launch endpoint
-// Canvas POST hier een id_token (JWT) na OIDC
-// -------------------------
-app.post("/lti/launch", async (req, res) => {
+  if (computedSig !== prov && computedSig !== providedSig) {
+    throw new Error("OAuth signature mismatch");
+  }
+
+  return true;
+}
+
+// LTI 1.1 Launch endpoint
+app.post("/lti11/launch", (req, res) => {
   try {
-    const { id_token, state } = req.body;
+    verifyLti11Launch(req);
 
-    if (!id_token || !state) {
-      return res.status(400).send("Missing id_token or state");
-    }
+    // Minimal “identity”
+    const roles = req.body.roles || "";
+    const userId = req.body.user_id || "";
+    const courseId = req.body.context_id || "";
+    const courseTitle = req.body.context_title || "";
 
-    // Check state cookie
-    const expectedState = req.cookies.lti_state;
-    const expectedNonce = req.cookies.lti_nonce;
+    // Doc id: we support ?doc=... in the launch URL OR custom_doc param
+    // If you add "?doc=H1" to the tool URL in Canvas, it arrives in the launch URL query
+    // (Canvas may also send custom params as "custom_*")
+    const doc = req.query.doc || req.body.custom_doc || "default";
 
-    if (!expectedState || state !== expectedState) {
-      return res.status(400).send("Invalid state");
-    }
-
-    // Als je later je Canvas client_id hebt, zet je dit aan:
-    // const clientId = process.env.LTI_CLIENT_ID;
-    // if (!clientId) return res.status(500).send("Missing LTI_CLIENT_ID env var");
-
-    const { payload } = await jwtVerify(id_token, canvasJwks, {
-      // audience: clientId,
-      // issuer: "https://canvas.instructure.com" // pas later exact aan op jouw Canvas iss
+    // Create a short-lived session cookie (so later we can stream images securely)
+    const session = crypto.randomBytes(18).toString("hex");
+    res.cookie("sv_session", session, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: 10 * 60 * 1000, // 10 min
     });
 
-    // Nonce check (zit in payload.nonce)
-    if (expectedNonce && payload.nonce && payload.nonce !== expectedNonce) {
-      return res.status(400).send("Invalid nonce");
-    }
-
-    // LTI claims
-    const roles = payload["https://purl.imsglobal.org/spec/lti/claim/roles"] || [];
-    const context = payload["https://purl.imsglobal.org/spec/lti/claim/context"] || {};
-    const messageType =
-      payload["https://purl.imsglobal.org/spec/lti/claim/message_type"] || "";
-
-    // Basic info
-    const sub = payload.sub;
-    const iss = payload.iss;
-    const aud = payload.aud;
-
     res.status(200).send(`
-      <h2>✅ LTI Launch OK</h2>
-      <p>Je tool heeft een geldig Canvas <code>id_token</code> ontvangen en geverifieerd.</p>
+      <h2>✅ LTI 1.1 Launch OK</h2>
+      <p><b>Doc:</b> ${doc}</p>
+      <p><b>User:</b> ${userId}</p>
+      <p><b>Roles:</b> ${roles}</p>
+      <p><b>Course:</b> ${courseTitle} (${courseId})</p>
       <hr/>
-      <p><b>Issuer (iss):</b> ${iss}</p>
-      <p><b>User (sub):</b> ${sub}</p>
-      <p><b>Audience (aud):</b> ${Array.isArray(aud) ? aud.join(", ") : aud}</p>
-      <p><b>Message type:</b> ${messageType}</p>
-      <p><b>Roles:</b> ${
-        Array.isArray(roles) ? roles.join(", ") : String(roles)
-      }</p>
-      <p><b>Context:</b> ${context?.title || ""} (${context?.id || ""})</p>
-      <hr/>
-      <p><i>Volgende stap:</i> hierna gaan we doorsturen naar de echte viewer en pagina-images streamen.</p>
+      <p>Volgende stap: hier vervangen we deze pagina door de echte viewer en gaan we pagina-afbeeldingen streamen.</p>
     `);
   } catch (e) {
-    res.status(401).send(`Launch verify failed: ${String(e)}`);
+    res.status(401).send(`LTI 1.1 launch rejected: ${String(e)}`);
   }
 });
 
-// -------------------------
 // Start server
-// -------------------------
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Listening on port ${port}`);

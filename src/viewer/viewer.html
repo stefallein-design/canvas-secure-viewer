@@ -7,12 +7,27 @@
     <style>
       body { font-family: Arial, sans-serif; margin: 0; }
 
+      /* Progress bar */
+      #progressWrap {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        height: 4px;
+        background: rgba(0,0,0,0.06);
+      }
+      #progressBar {
+        height: 100%;
+        width: 0%;
+        background: rgba(0,0,0,0.55);
+        transition: width 80ms linear;
+      }
+
       /* Topbar */
       #bar {
         position: sticky;
-        top: 0;
-        z-index: 10;
-        background: rgba(255,255,255,0.95);
+        top: 4px; /* under progress */
+        z-index: 15;
+        background: rgba(255,255,255,0.96);
         border-bottom: 1px solid #eee;
         padding: 10px 12px;
         display: flex;
@@ -24,20 +39,21 @@
         padding: 6px 10px;
         border: 1px solid #ddd;
         background: #fff;
-        border-radius: 8px;
+        border-radius: 10px;
         cursor: pointer;
       }
       #bar button:active { transform: translateY(1px); }
-
-      /* Actieve modus knop */
       #bar button.active {
         border-color: #999;
         background: #f3f3f3;
         font-weight: 600;
       }
 
-      #bar input[type="range"] { width: 180px; }
+      #bar input[type="range"] { width: 170px; }
+
+      /* Labels */
       #zoomLabel { min-width: 64px; text-align: right; color: #333; font-size: 14px; }
+      #pageIndicator { color: #333; font-size: 14px; padding-left: 2px; }
 
       /* Auto badge */
       #autoBadge {
@@ -72,7 +88,40 @@
         will-change: transform;
       }
 
-      img { width: 100%; height: auto; border: 1px solid #eee; }
+      /* Page card */
+      .pageCard {
+        position: relative;
+        background: #fff;
+      }
+
+      /* Page toolbar (bookmark/important) */
+      .pageTools {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        display: flex;
+        gap: 8px;
+        z-index: 5;
+      }
+      .toolBtn {
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.18);
+        background: rgba(255,255,255,0.92);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        font-size: 18px;
+        line-height: 1;
+      }
+      .toolBtn:active { transform: translateY(1px); }
+      .toolBtn.on {
+        background: rgba(0,0,0,0.08);
+        border-color: rgba(0,0,0,0.35);
+      }
+
+      img { width: 100%; height: auto; border: 1px solid #eee; display: block; }
 
       /* Geen tekstselectie / slepen */
       body { -webkit-user-select: none; user-select: none; }
@@ -101,13 +150,88 @@
         gap: 10px;
       }
       .wm-cell { white-space: pre-wrap; padding: 8px 12px; }
+
+      /* Bookmarks panel */
+      #bmPanel {
+        position: fixed;
+        top: 8px;
+        right: 8px;
+        z-index: 30;
+        width: min(360px, calc(100vw - 16px));
+        max-height: calc(100vh - 16px);
+        overflow: auto;
+        background: rgba(255,255,255,0.98);
+        border: 1px solid #e2e2e2;
+        border-radius: 14px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+        padding: 10px;
+        display: none;
+      }
+      #bmPanel h3 {
+        margin: 6px 6px 10px 6px;
+        font-size: 16px;
+      }
+      .bmRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 10px;
+      }
+      .bmRow:hover { background: rgba(0,0,0,0.04); }
+      .bmRow button {
+        border: 1px solid #ddd;
+        background: #fff;
+        border-radius: 10px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .bmMeta { flex: 1; font-size: 14px; color: #333; }
+      .bmTag { font-size: 12px; color: #666; }
+      .bmDel { font-size: 12px; color: #b00020; border-color: #f0c6c6; }
+      #bmClose { float: right; }
+
+      /* Focus mode */
+      body.focus #bar,
+      body.focus #progressWrap,
+      body.focus #bmPanel {
+        display: none !important;
+      }
+      body.focus #pages {
+        width: min(1400px, 100%);
+        padding-top: 24px;
+      }
+      body.focus #msg { display: none; }
+      body.focus {
+        background: #111;
+      }
+      body.focus #pagesWrap {
+        background: #111;
+      }
+      body.focus .pageCard {
+        background: #111;
+      }
+      body.focus img {
+        border-color: rgba(255,255,255,0.10);
+      }
+      /* In focus mode, keep page tools but make them subtle */
+      body.focus .toolBtn {
+        background: rgba(20,20,20,0.55);
+        border-color: rgba(255,255,255,0.16);
+        color: #fff;
+      }
+      body.focus .toolBtn.on {
+        background: rgba(255,255,255,0.14);
+      }
     </style>
   </head>
 
   <body>
     <div id="wm"></div>
 
-    <div id="bar" aria-label="Zoom controls">
+    <div id="progressWrap"><div id="progressBar"></div></div>
+
+    <div id="bar" aria-label="Study controls">
       <button id="zoomOut" type="button">−</button>
       <input id="zoom" type="range" min="50" max="200" value="100" />
       <button id="zoomIn" type="button">+</button>
@@ -121,9 +245,21 @@
       <div id="zoomLabel">100%</div>
 
       <div id="autoBadge" title="Deze modus blijft automatisch volgen bij resize/rotatie">
-        <span>Auto</span>
-        <span aria-hidden="true">🔒</span>
-        <span id="autoText"></span>
+        <span>Auto</span><span aria-hidden="true">🔒</span><span id="autoText"></span>
+      </div>
+
+      <div id="pageIndicator"></div>
+
+      <button id="btnBookmarks" type="button" title="Bladwijzers & belangrijk">⭐</button>
+      <button id="btnFocus" type="button" title="Focus-modus (ESC om te sluiten)">Focus</button>
+    </div>
+
+    <div id="bmPanel" role="dialog" aria-label="Bladwijzers">
+      <button id="bmClose">Sluiten</button>
+      <h3>Bladwijzers & belangrijk</h3>
+      <div id="bmList"></div>
+      <div style="padding: 8px; font-size: 12px; color:#666;">
+        Dit is persoonlijk (alleen op jouw toestel/browser).
       </div>
     </div>
 
@@ -147,6 +283,7 @@
         if ((e.ctrlKey || e.metaKey) && (key === "s" || key === "p")) e.preventDefault();
       });
 
+      // Helpers
       function makeTiledWatermark(text) {
         const wmEl = document.getElementById("wm");
         wmEl.innerHTML = "";
@@ -157,6 +294,10 @@
           cell.textContent = text;
           wmEl.appendChild(cell);
         }
+      }
+
+      function safeJsonParse(s, fallback) {
+        try { return JSON.parse(s); } catch { return fallback; }
       }
 
       // Elements
@@ -178,15 +319,140 @@
       const autoBadge = document.getElementById("autoBadge");
       const autoText = document.getElementById("autoText");
 
-      // Zoom state
+      const pageIndicator = document.getElementById("pageIndicator");
+      const progressBar = document.getElementById("progressBar");
+
+      const btnBookmarks = document.getElementById("btnBookmarks");
+      const bmPanel = document.getElementById("bmPanel");
+      const bmClose = document.getElementById("bmClose");
+      const bmList = document.getElementById("bmList");
+
+      const btnFocus = document.getElementById("btnFocus");
+
+      const msg = document.getElementById("msg");
+
+      // State
       let zoomPct = 100;
+      let followMode = "none"; // none | width | page
 
-      // Follow-mode state:
-      // "none" = manual zoom
-      // "width" = follow fit-to-width on resize/orientation
-      // "page" = follow fit-to-height (first page) on resize/orientation
-      let followMode = "none";
+      let docId = "";
+      let pageList = [];
+      let pageIndexByNumber = new Map(); // pageNum -> index in list
 
+      // Per-doc local storage key
+      function storageKey() {
+        return `sv_marks_${docId}`;
+      }
+
+      function loadMarks() {
+        // { bookmarks: { [pageNum]: true }, important: { [pageNum]: true } }
+        const raw = localStorage.getItem(storageKey()) || "";
+        const obj = safeJsonParse(raw, { bookmarks: {}, important: {} });
+        if (!obj.bookmarks) obj.bookmarks = {};
+        if (!obj.important) obj.important = {};
+        return obj;
+      }
+
+      function saveMarks(obj) {
+        localStorage.setItem(storageKey(), JSON.stringify(obj));
+      }
+
+      function toggleMark(type, pageNum) {
+        const marks = loadMarks();
+        const bag = (type === "bookmark") ? marks.bookmarks : marks.important;
+        if (bag[String(pageNum)]) delete bag[String(pageNum)];
+        else bag[String(pageNum)] = true;
+        saveMarks(marks);
+        renderBookmarksPanel();
+        updatePageToolButtons(pageNum);
+      }
+
+      function isMarked(type, pageNum) {
+        const marks = loadMarks();
+        const bag = (type === "bookmark") ? marks.bookmarks : marks.important;
+        return !!bag[String(pageNum)];
+      }
+
+      function updatePageToolButtons(pageNum) {
+        const card = document.querySelector(`.pageCard[data-page="${pageNum}"]`);
+        if (!card) return;
+        const bmBtn = card.querySelector(`[data-action="bookmark"]`);
+        const impBtn = card.querySelector(`[data-action="important"]`);
+        if (bmBtn) bmBtn.classList.toggle("on", isMarked("bookmark", pageNum));
+        if (impBtn) impBtn.classList.toggle("on", isMarked("important", pageNum));
+      }
+
+      function scrollToPage(pageNum) {
+        const el = document.querySelector(`.pageCard[data-page="${pageNum}"]`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function renderBookmarksPanel() {
+        if (!docId) return;
+        const marks = loadMarks();
+
+        const bmPages = Object.keys(marks.bookmarks || {}).map((n) => parseInt(n, 10)).filter(Boolean);
+        const impPages = Object.keys(marks.important || {}).map((n) => parseInt(n, 10)).filter(Boolean);
+
+        // Only show those that exist in current pageList (range)
+        const allowed = new Set(pageList);
+        const bm = bmPages.filter((n) => allowed.has(n)).sort((a,b)=>a-b);
+        const imp = impPages.filter((n) => allowed.has(n)).sort((a,b)=>a-b);
+
+        const rows = [];
+
+        if (bm.length) {
+          rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Bladwijzers</div>`);
+          for (const n of bm) {
+            rows.push(`
+              <div class="bmRow">
+                <div class="bmMeta">Pagina ${n}</div>
+                <div class="bmTag">🔖</div>
+                <button onclick="window.__sv.goto(${n})">Ga</button>
+                <button class="bmDel" onclick="window.__sv.unmark('bookmark', ${n})">Verwijder</button>
+              </div>
+            `);
+          }
+        } else {
+          rows.push(`<div style="padding:6px 8px; color:#666;">Geen bladwijzers.</div>`);
+        }
+
+        rows.push(`<div style="height:10px;"></div>`);
+
+        if (imp.length) {
+          rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Belangrijk</div>`);
+          for (const n of imp) {
+            rows.push(`
+              <div class="bmRow">
+                <div class="bmMeta">Pagina ${n}</div>
+                <div class="bmTag">⭐</div>
+                <button onclick="window.__sv.goto(${n})">Ga</button>
+                <button class="bmDel" onclick="window.__sv.unmark('important', ${n})">Verwijder</button>
+              </div>
+            `);
+          }
+        } else {
+          rows.push(`<div style="padding:6px 8px; color:#666;">Nog niets als belangrijk gemarkeerd.</div>`);
+        }
+
+        bmList.innerHTML = rows.join("");
+      }
+
+      // expose small hooks for inline buttons
+      window.__sv = {
+        goto: (n) => scrollToPage(n),
+        unmark: (type, n) => {
+          const marks = loadMarks();
+          const bag = (type === "bookmark") ? marks.bookmarks : marks.important;
+          delete bag[String(n)];
+          saveMarks(marks);
+          renderBookmarksPanel();
+          updatePageToolButtons(n);
+        }
+      };
+
+      // --- Zoom / modes
       function updateAutoBadge() {
         if (followMode === "width") {
           autoText.textContent = "Breedte";
@@ -230,20 +496,16 @@
         if (followMode !== "none") setFollowMode("none");
       }
 
-      // Load saved state
+      // Load saved zoom + mode
       try {
         const savedZoom = parseInt(localStorage.getItem("sv_zoom") || "100", 10);
         zoomPct = Number.isFinite(savedZoom) ? savedZoom : 100;
-      } catch (_) {
-        zoomPct = 100;
-      }
+      } catch (_) { zoomPct = 100; }
 
       try {
         const savedMode = localStorage.getItem("sv_follow_mode") || "none";
         followMode = (savedMode === "width" || savedMode === "page") ? savedMode : "none";
-      } catch (_) {
-        followMode = "none";
-      }
+      } catch (_) { followMode = "none"; }
 
       applyZoom();
       setActiveModeButtons();
@@ -254,7 +516,7 @@
       zoomInBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(zoomPct + 10); });
       zoomResetBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(100); });
 
-      // ---- Fit-to-width (one-off)
+      // Fit-to-width (one-off)
       function computeFitToWidthPct() {
         const containerWidth = pinchArea.getBoundingClientRect().width;
         const baseWidth = pagesEl.getBoundingClientRect().width;
@@ -263,18 +525,13 @@
         const target = Math.floor(((containerWidth - margin) / baseWidth) * 100);
         return Math.max(50, Math.min(200, target));
       }
-
       function fitToWidthOnce() {
         const target = computeFitToWidthPct();
         if (target != null) setZoomPercent(target);
       }
+      zoomFitBtn.addEventListener("click", () => { disableFollowMode(); fitToWidthOnce(); });
 
-      zoomFitBtn.addEventListener("click", () => {
-        disableFollowMode();
-        fitToWidthOnce();
-      });
-
-      // ---- Fit-to-page (height): based on first page
+      // Fit-to-page (height) based on first page
       function computeFitToPagePct() {
         const firstImg = pagesEl.querySelector("img");
         if (!firstImg) return null;
@@ -293,40 +550,28 @@
         const target = Math.floor((availableH / baseH) * 100);
         return Math.max(50, Math.min(200, target));
       }
-
       function fitToPageOnce() {
         const target = computeFitToPagePct();
         if (target != null) setZoomPercent(target);
       }
 
-      // Follow mode buttons
+      // Follow buttons
       modeWidthBtn.addEventListener("click", () => {
-        if (followMode === "width") {
-          setFollowMode("none");
-        } else {
-          setFollowMode("width");
-          fitToWidthOnce();
-        }
+        if (followMode === "width") setFollowMode("none");
+        else { setFollowMode("width"); fitToWidthOnce(); }
       });
-
       modePageBtn.addEventListener("click", () => {
-        if (followMode === "page") {
-          setFollowMode("none");
-        } else {
-          setFollowMode("page");
-          fitToPageOnce();
-        }
+        if (followMode === "page") setFollowMode("none");
+        else { setFollowMode("page"); fitToPageOnce(); }
       });
 
-      // On resize/orientation: follow current mode
       function onResizeFollow() {
         if (followMode === "width") fitToWidthOnce();
         if (followMode === "page") fitToPageOnce();
       }
       window.addEventListener("resize", onResizeFollow);
 
-      // ---- Pinch-to-zoom (touch)
-      // Pinch disables follow mode (user wants manual control)
+      // Pinch-to-zoom (touch) disables follow mode
       let pinchActive = false;
       let startDist = 0;
       let startZoom = 100;
@@ -367,29 +612,102 @@
         }
       });
 
+      // --- Focus mode
+      function setFocusMode(on) {
+        document.body.classList.toggle("focus", !!on);
+        btnFocus.classList.toggle("active", !!on);
+        btnFocus.textContent = on ? "Stop focus" : "Focus";
+      }
+
+      btnFocus.addEventListener("click", () => {
+        const on = !document.body.classList.contains("focus");
+        setFocusMode(on);
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          if (document.body.classList.contains("focus")) setFocusMode(false);
+          if (bmPanel.style.display === "block") bmPanel.style.display = "none";
+        }
+      });
+
+      // --- Bookmarks panel
+      btnBookmarks.addEventListener("click", () => {
+        bmPanel.style.display = (bmPanel.style.display === "block") ? "none" : "block";
+        renderBookmarksPanel();
+      });
+      bmClose.addEventListener("click", () => {
+        bmPanel.style.display = "none";
+      });
+
+      // --- Page indicator + scroll progress
+      let currentVisiblePage = null;
+      function updatePageIndicator(pageNum) {
+        if (!pageList.length || !pageIndexByNumber.size) return;
+        const idx = pageIndexByNumber.get(pageNum);
+        if (idx == null) return;
+        pageIndicator.textContent = `Pagina ${idx + 1} / ${pageList.length}`;
+      }
+
+      function updateProgressBar() {
+        const docEl = document.documentElement;
+        const scrollTop = docEl.scrollTop || document.body.scrollTop;
+        const scrollHeight = docEl.scrollHeight || document.body.scrollHeight;
+        const clientHeight = docEl.clientHeight || window.innerHeight;
+        const maxScroll = Math.max(1, scrollHeight - clientHeight);
+        const pct = Math.max(0, Math.min(1, scrollTop / maxScroll));
+        progressBar.style.width = `${Math.round(pct * 100)}%`;
+      }
+
+      window.addEventListener("scroll", () => {
+        updateProgressBar();
+      }, { passive: true });
+
+      // Observe which page card is in view
+      let io = null;
+      function setupIntersectionObserver() {
+        if (io) io.disconnect();
+        io = new IntersectionObserver((entries) => {
+          // pick the most "visible" entry
+          let best = null;
+          for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
+          }
+          if (!best) return;
+
+          const pageNum = parseInt(best.target.getAttribute("data-page"), 10);
+          if (!Number.isFinite(pageNum)) return;
+
+          if (currentVisiblePage !== pageNum) {
+            currentVisiblePage = pageNum;
+            updatePageIndicator(pageNum);
+          }
+        }, { threshold: [0.25, 0.5, 0.75] });
+      }
+
+      // Main
       (async function () {
         try {
+          // doc from URL
           const parts = window.location.pathname.split("/");
-          const doc = parts[parts.length - 1];
+          docId = parts[parts.length - 1];
 
           const params = new URLSearchParams(window.location.search);
           const t = params.get("t") || "";
 
-          const msg = document.getElementById("msg");
-
-          // Identiteit ophalen (Naam + ID)
+          // Identity (watermark)
           const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
           let me = { userId: "", name: "" };
           try {
             const meRes = await fetch(meUrl, { credentials: "include" });
             if (meRes.ok) me = await meRes.json();
           } catch (_) {}
-
           makeTiledWatermark(`Naam: ${me.name || "?"}\nID: ${me.userId || "?"}`);
 
-          // Manifest ophalen
+          // Manifest
           const manifestUrl =
-            `/api/docs/${encodeURIComponent(doc)}/manifest` +
+            `/api/docs/${encodeURIComponent(docId)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
 
           const manifestRes = await fetch(manifestUrl, { credentials: "include" });
@@ -399,36 +717,92 @@
           }
 
           const manifest = await manifestRes.json();
-          const list = Array.isArray(manifest.pageList) ? manifest.pageList : [];
-          if (!list.length) {
+          pageList = Array.isArray(manifest.pageList) ? manifest.pageList : [];
+          if (!pageList.length) {
             msg.textContent = "Documentfout.";
             return;
           }
 
-          for (const pageNum of list) {
+          pageIndexByNumber = new Map();
+          pageList.forEach((n, i) => pageIndexByNumber.set(n, i));
+
+          // Build pages
+          setupIntersectionObserver();
+
+          for (const pageNum of pageList) {
+            const card = document.createElement("div");
+            card.className = "pageCard";
+            card.setAttribute("data-page", String(pageNum));
+
+            const tools = document.createElement("div");
+            tools.className = "pageTools";
+
+            const bmBtn = document.createElement("button");
+            bmBtn.className = "toolBtn";
+            bmBtn.type = "button";
+            bmBtn.title = "Bladwijzer";
+            bmBtn.textContent = "🔖";
+            bmBtn.setAttribute("data-action", "bookmark");
+            bmBtn.classList.toggle("on", isMarked("bookmark", pageNum));
+            bmBtn.addEventListener("click", () => toggleMark("bookmark", pageNum));
+
+            const impBtn = document.createElement("button");
+            impBtn.className = "toolBtn";
+            impBtn.type = "button";
+            impBtn.title = "Markeer als belangrijk";
+            impBtn.textContent = "⭐";
+            impBtn.setAttribute("data-action", "important");
+            impBtn.classList.toggle("on", isMarked("important", pageNum));
+            impBtn.addEventListener("click", () => toggleMark("important", pageNum));
+
+            tools.appendChild(bmBtn);
+            tools.appendChild(impBtn);
+
             const img = document.createElement("img");
             img.loading = "lazy";
             img.alt = `Pagina ${pageNum}`;
             img.src =
-              `/api/docs/${encodeURIComponent(doc)}/page/${pageNum}` +
+              `/api/docs/${encodeURIComponent(docId)}/page/${pageNum}` +
               (t ? `?t=${encodeURIComponent(t)}` : "");
-            pagesEl.appendChild(img);
+
+            card.appendChild(tools);
+            card.appendChild(img);
+            pagesEl.appendChild(card);
+
+            // Observe visibility
+            io.observe(card);
           }
 
-          // Wait for first image to load to compute page-fit properly
+          // Initial UI updates
+          updateProgressBar();
+
+          // set first page indicator immediately
+          updatePageIndicator(pageList[0]);
+
+          // If follow mode is active, adjust after first image loads
           const firstImg = pagesEl.querySelector("img");
           if (firstImg) {
             firstImg.addEventListener("load", () => {
-              if (followMode === "page") fitToPageOnce();
-              if (followMode === "width") fitToWidthOnce();
+              if (followMode === "page") {
+                const target = computeFitToPagePct();
+                if (target != null) setZoomPercent(target);
+              }
+              if (followMode === "width") {
+                const target = computeFitToWidthPct();
+                if (target != null) setZoomPercent(target);
+              }
             }, { once: true });
           }
 
+          // Keep bookmarks panel in sync when opened later
+          renderBookmarksPanel();
+
         } catch (e) {
-          document.getElementById("msg").textContent = "Er ging iets mis.";
+          msg.textContent = "Er ging iets mis.";
         }
       })();
     </script>
   </body>
 </html>
+
 

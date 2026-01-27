@@ -7,14 +7,81 @@
     <style>
       body { font-family: Arial, sans-serif; margin: 0; }
 
-      #pages { padding: 16px; display: grid; gap: 16px; }
+      /* Topbar */
+      #bar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(255,255,255,0.95);
+        border-bottom: 1px solid #eee;
+        padding: 10px 12px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      #bar button {
+        padding: 6px 10px;
+        border: 1px solid #ddd;
+        background: #fff;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      #bar button:active { transform: translateY(1px); }
+
+      /* Actieve modus knop */
+      #bar button.active {
+        border-color: #999;
+        background: #f3f3f3;
+        font-weight: 600;
+      }
+
+      #bar input[type="range"] { width: 180px; }
+      #zoomLabel { min-width: 64px; text-align: right; color: #333; font-size: 14px; }
+
+      /* Auto badge */
+      #autoBadge {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border: 1px solid #ddd;
+        background: #f7f7f7;
+        border-radius: 999px;
+        font-size: 13px;
+        color: #333;
+        white-space: nowrap;
+      }
+
+      #msg { padding: 10px 12px; color: #b00020; font-size: 14px; }
+
+      /* Layout */
+      #pagesWrap { display: grid; justify-items: center; }
+
+      #pages {
+        width: min(1100px, 100%);
+        padding: 16px;
+        display: grid;
+        gap: 16px;
+      }
+
+      /* Zoom transform on this layer */
+      #scaleLayer {
+        transform: scale(var(--zoom, 1));
+        transform-origin: top center;
+        will-change: transform;
+      }
+
       img { width: 100%; height: auto; border: 1px solid #eee; }
 
       /* Geen tekstselectie / slepen */
       body { -webkit-user-select: none; user-select: none; }
       img { -webkit-user-drag: none; user-drag: none; }
 
-      /* Watermark overlay: boven alles, niet klikbaar, licht */
+      /* Pinch */
+      #pinchArea { touch-action: pan-x pan-y; }
+
+      /* Watermark overlay */
       #wm {
         position: fixed;
         inset: 0;
@@ -34,16 +101,41 @@
         gap: 10px;
       }
       .wm-cell { white-space: pre-wrap; padding: 8px 12px; }
-
-      /* Foutmelding (onzichtbaar tot nodig) */
-      #msg { padding: 12px 16px; color: #b00020; font-size: 14px; }
     </style>
   </head>
 
   <body>
     <div id="wm"></div>
+
+    <div id="bar" aria-label="Zoom controls">
+      <button id="zoomOut" type="button">−</button>
+      <input id="zoom" type="range" min="50" max="200" value="100" />
+      <button id="zoomIn" type="button">+</button>
+
+      <button id="zoomReset" type="button">100%</button>
+      <button id="zoomFit" type="button">Passend</button>
+
+      <button id="modeWidth" type="button">Breedte</button>
+      <button id="modePage" type="button">Pagina</button>
+
+      <div id="zoomLabel">100%</div>
+
+      <div id="autoBadge" title="Deze modus blijft automatisch volgen bij resize/rotatie">
+        <span>Auto</span>
+        <span aria-hidden="true">🔒</span>
+        <span id="autoText"></span>
+      </div>
+    </div>
+
     <div id="msg"></div>
-    <div id="pages"></div>
+
+    <div id="pagesWrap">
+      <div id="pinchArea">
+        <div id="scaleLayer">
+          <div id="pages"></div>
+        </div>
+      </div>
+    </div>
 
     <script>
       // Rechtermuisklik blokkeren
@@ -67,9 +159,216 @@
         }
       }
 
+      // Elements
+      const pagesEl = document.getElementById("pages");
+      const pinchArea = document.getElementById("pinchArea");
+      const scaleLayer = document.getElementById("scaleLayer");
+
+      const zoomEl = document.getElementById("zoom");
+      const zoomLabel = document.getElementById("zoomLabel");
+
+      const zoomOutBtn = document.getElementById("zoomOut");
+      const zoomInBtn = document.getElementById("zoomIn");
+      const zoomResetBtn = document.getElementById("zoomReset");
+      const zoomFitBtn = document.getElementById("zoomFit");
+
+      const modeWidthBtn = document.getElementById("modeWidth");
+      const modePageBtn = document.getElementById("modePage");
+
+      const autoBadge = document.getElementById("autoBadge");
+      const autoText = document.getElementById("autoText");
+
+      // Zoom state
+      let zoomPct = 100;
+
+      // Follow-mode state:
+      // "none" = manual zoom
+      // "width" = follow fit-to-width on resize/orientation
+      // "page" = follow fit-to-height (first page) on resize/orientation
+      let followMode = "none";
+
+      function updateAutoBadge() {
+        if (followMode === "width") {
+          autoText.textContent = "Breedte";
+          autoBadge.style.display = "inline-flex";
+        } else if (followMode === "page") {
+          autoText.textContent = "Pagina";
+          autoBadge.style.display = "inline-flex";
+        } else {
+          autoBadge.style.display = "none";
+          autoText.textContent = "";
+        }
+      }
+
+      function setActiveModeButtons() {
+        modeWidthBtn.classList.toggle("active", followMode === "width");
+        modePageBtn.classList.toggle("active", followMode === "page");
+        updateAutoBadge();
+      }
+
+      function applyZoom() {
+        const clamped = Math.max(50, Math.min(200, zoomPct));
+        zoomPct = clamped;
+        zoomEl.value = String(clamped);
+        zoomLabel.textContent = `${clamped}%`;
+        scaleLayer.style.setProperty("--zoom", String(clamped / 100));
+        try { localStorage.setItem("sv_zoom", String(clamped)); } catch (_) {}
+      }
+
+      function setZoomPercent(pct) {
+        zoomPct = pct;
+        applyZoom();
+      }
+
+      function setFollowMode(mode) {
+        followMode = mode;
+        setActiveModeButtons();
+        try { localStorage.setItem("sv_follow_mode", followMode); } catch (_) {}
+      }
+
+      function disableFollowMode() {
+        if (followMode !== "none") setFollowMode("none");
+      }
+
+      // Load saved state
+      try {
+        const savedZoom = parseInt(localStorage.getItem("sv_zoom") || "100", 10);
+        zoomPct = Number.isFinite(savedZoom) ? savedZoom : 100;
+      } catch (_) {
+        zoomPct = 100;
+      }
+
+      try {
+        const savedMode = localStorage.getItem("sv_follow_mode") || "none";
+        followMode = (savedMode === "width" || savedMode === "page") ? savedMode : "none";
+      } catch (_) {
+        followMode = "none";
+      }
+
+      applyZoom();
+      setActiveModeButtons();
+
+      // Manual controls disable follow mode
+      zoomEl.addEventListener("input", () => { disableFollowMode(); setZoomPercent(parseInt(zoomEl.value, 10)); });
+      zoomOutBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(zoomPct - 10); });
+      zoomInBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(zoomPct + 10); });
+      zoomResetBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(100); });
+
+      // ---- Fit-to-width (one-off)
+      function computeFitToWidthPct() {
+        const containerWidth = pinchArea.getBoundingClientRect().width;
+        const baseWidth = pagesEl.getBoundingClientRect().width;
+        if (!containerWidth || !baseWidth) return null;
+        const margin = 24;
+        const target = Math.floor(((containerWidth - margin) / baseWidth) * 100);
+        return Math.max(50, Math.min(200, target));
+      }
+
+      function fitToWidthOnce() {
+        const target = computeFitToWidthPct();
+        if (target != null) setZoomPercent(target);
+      }
+
+      zoomFitBtn.addEventListener("click", () => {
+        disableFollowMode();
+        fitToWidthOnce();
+      });
+
+      // ---- Fit-to-page (height): based on first page
+      function computeFitToPagePct() {
+        const firstImg = pagesEl.querySelector("img");
+        if (!firstImg) return null;
+
+        const bar = document.getElementById("bar");
+        const barH = bar ? bar.getBoundingClientRect().height : 0;
+
+        const availableH = window.innerHeight - barH - 24;
+        if (availableH <= 0) return null;
+
+        const rect = firstImg.getBoundingClientRect();
+        const currentZoom = zoomPct / 100;
+        const baseH = rect.height / currentZoom;
+        if (!baseH) return null;
+
+        const target = Math.floor((availableH / baseH) * 100);
+        return Math.max(50, Math.min(200, target));
+      }
+
+      function fitToPageOnce() {
+        const target = computeFitToPagePct();
+        if (target != null) setZoomPercent(target);
+      }
+
+      // Follow mode buttons
+      modeWidthBtn.addEventListener("click", () => {
+        if (followMode === "width") {
+          setFollowMode("none");
+        } else {
+          setFollowMode("width");
+          fitToWidthOnce();
+        }
+      });
+
+      modePageBtn.addEventListener("click", () => {
+        if (followMode === "page") {
+          setFollowMode("none");
+        } else {
+          setFollowMode("page");
+          fitToPageOnce();
+        }
+      });
+
+      // On resize/orientation: follow current mode
+      function onResizeFollow() {
+        if (followMode === "width") fitToWidthOnce();
+        if (followMode === "page") fitToPageOnce();
+      }
+      window.addEventListener("resize", onResizeFollow);
+
+      // ---- Pinch-to-zoom (touch)
+      // Pinch disables follow mode (user wants manual control)
+      let pinchActive = false;
+      let startDist = 0;
+      let startZoom = 100;
+
+      function dist(t1, t2) {
+        const dx = t1.clientX - t2.clientX;
+        const dy = t1.clientY - t2.clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      pinchArea.addEventListener("touchstart", (e) => {
+        if (e.touches && e.touches.length === 2) {
+          pinchActive = true;
+          startDist = dist(e.touches[0], e.touches[1]);
+          startZoom = zoomPct;
+          disableFollowMode();
+        }
+      }, { passive: true });
+
+      pinchArea.addEventListener("touchmove", (e) => {
+        if (!pinchActive) return;
+        if (!e.touches || e.touches.length !== 2) return;
+
+        const d = dist(e.touches[0], e.touches[1]);
+        if (!startDist) return;
+
+        const ratio = d / startDist;
+        const next = Math.round(startZoom * ratio);
+
+        zoomPct = Math.max(50, Math.min(200, next));
+        applyZoom();
+      }, { passive: true });
+
+      pinchArea.addEventListener("touchend", (e) => {
+        if (!e.touches || e.touches.length < 2) {
+          pinchActive = false;
+          startDist = 0;
+        }
+      });
+
       (async function () {
         try {
-          // doc zit in de URL, maar we tonen hem nergens
           const parts = window.location.pathname.split("/");
           const doc = parts[parts.length - 1];
 
@@ -77,7 +376,6 @@
           const t = params.get("t") || "";
 
           const msg = document.getElementById("msg");
-          const pagesEl = document.getElementById("pages");
 
           // Identiteit ophalen (Naam + ID)
           const meUrl = `/api/me${t ? `?t=${encodeURIComponent(t)}` : ""}`;
@@ -89,7 +387,7 @@
 
           makeTiledWatermark(`Naam: ${me.name || "?"}\nID: ${me.userId || "?"}`);
 
-          // Manifest ophalen (nieuw formaat: { doc, totalPages, pageList })
+          // Manifest ophalen
           const manifestUrl =
             `/api/docs/${encodeURIComponent(doc)}/manifest` +
             (t ? `?t=${encodeURIComponent(t)}` : "");
@@ -102,13 +400,11 @@
 
           const manifest = await manifestRes.json();
           const list = Array.isArray(manifest.pageList) ? manifest.pageList : [];
-
           if (!list.length) {
             msg.textContent = "Documentfout.";
             return;
           }
 
-          // Alleen de pagina's uit pageList laden (range support)
           for (const pageNum of list) {
             const img = document.createElement("img");
             img.loading = "lazy";
@@ -118,6 +414,16 @@
               (t ? `?t=${encodeURIComponent(t)}` : "");
             pagesEl.appendChild(img);
           }
+
+          // Wait for first image to load to compute page-fit properly
+          const firstImg = pagesEl.querySelector("img");
+          if (firstImg) {
+            firstImg.addEventListener("load", () => {
+              if (followMode === "page") fitToPageOnce();
+              if (followMode === "width") fitToWidthOnce();
+            }, { once: true });
+          }
+
         } catch (e) {
           document.getElementById("msg").textContent = "Er ging iets mis.";
         }

@@ -54,6 +54,7 @@
       /* Labels */
       #zoomLabel { min-width: 64px; text-align: right; color: #333; font-size: 14px; }
       #pageIndicator { color: #333; font-size: 14px; padding-left: 2px; }
+      #studyTime { color:#333; font-size: 14px; padding-left: 2px; white-space: nowrap; }
 
       /* Auto badge */
       #autoBadge {
@@ -191,6 +192,34 @@
       .bmDel { font-size: 12px; color: #b00020; border-color: #f0c6c6; }
       #bmClose { float: right; }
 
+      /* Soft inactivity prompt */
+      #idlePrompt {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        z-index: 40;
+        display: none;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        background: rgba(255,255,255,0.98);
+        border: 1px solid #e2e2e2;
+        border-radius: 14px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+        padding: 10px 12px;
+        font-size: 14px;
+        color: #333;
+      }
+      #idlePrompt button {
+        border: 1px solid #ddd;
+        background: #fff;
+        border-radius: 10px;
+        padding: 6px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
       /* Focus mode */
       body.focus #bar,
       body.focus #progressWrap,
@@ -232,6 +261,10 @@
     <div id="progressWrap"><div id="progressBar"></div></div>
 
     <div id="bar" aria-label="Study controls">
+      <!-- NEW: vorige/volgende -->
+      <button id="btnPrev" type="button" title="Vorige pagina">◀</button>
+      <button id="btnNext" type="button" title="Volgende pagina">▶</button>
+
       <button id="zoomOut" type="button">−</button>
       <input id="zoom" type="range" min="50" max="200" value="100" />
       <button id="zoomIn" type="button">+</button>
@@ -250,6 +283,9 @@
 
       <div id="pageIndicator"></div>
 
+      <!-- NEW: studietijd -->
+      <div id="studyTime"></div>
+
       <button id="btnBookmarks" type="button" title="Bladwijzers & belangrijk">⭐</button>
       <button id="btnFocus" type="button" title="Focus-modus (ESC om te sluiten)">Focus</button>
     </div>
@@ -260,6 +296,15 @@
       <div id="bmList"></div>
       <div style="padding: 8px; font-size: 12px; color:#666;">
         Dit is persoonlijk (alleen op jouw toestel/browser).
+      </div>
+    </div>
+
+    <!-- NEW: inactivity prompt -->
+    <div id="idlePrompt">
+      <div>Nog aan het studeren?</div>
+      <div style="display:flex; gap:8px;">
+        <button id="idleYes">Ja, verder</button>
+        <button id="idleHide">Sluiten</button>
       </div>
     </div>
 
@@ -300,6 +345,15 @@
         try { return JSON.parse(s); } catch { return fallback; }
       }
 
+      function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+      function formatMMSS(seconds) {
+        const s = Math.max(0, Math.floor(seconds));
+        const mm = String(Math.floor(s / 60)).padStart(2, "0");
+        const ss = String(s % 60).padStart(2, "0");
+        return `${mm}:${ss}`;
+      }
+
       // Elements
       const pagesEl = document.getElementById("pages");
       const pinchArea = document.getElementById("pinchArea");
@@ -329,6 +383,15 @@
 
       const btnFocus = document.getElementById("btnFocus");
 
+      const btnPrev = document.getElementById("btnPrev");
+      const btnNext = document.getElementById("btnNext");
+
+      const studyTimeEl = document.getElementById("studyTime");
+
+      const idlePrompt = document.getElementById("idlePrompt");
+      const idleYes = document.getElementById("idleYes");
+      const idleHide = document.getElementById("idleHide");
+
       const msg = document.getElementById("msg");
 
       // State
@@ -337,25 +400,20 @@
 
       let docId = "";
       let pageList = [];
-      let pageIndexByNumber = new Map(); // pageNum -> index in list
+      let pageIndexByNumber = new Map(); // original pageNum -> index in list
+      let currentVisiblePage = null;
 
-      // Per-doc local storage key
-      function storageKey() {
-        return `sv_marks_${docId}`;
-      }
+      // ----- Marks storage
+      function storageKey() { return `sv_marks_${docId}`; }
 
       function loadMarks() {
-        // { bookmarks: { [pageNum]: true }, important: { [pageNum]: true } }
         const raw = localStorage.getItem(storageKey()) || "";
         const obj = safeJsonParse(raw, { bookmarks: {}, important: {} });
         if (!obj.bookmarks) obj.bookmarks = {};
         if (!obj.important) obj.important = {};
         return obj;
       }
-
-      function saveMarks(obj) {
-        localStorage.setItem(storageKey(), JSON.stringify(obj));
-      }
+      function saveMarks(obj) { localStorage.setItem(storageKey(), JSON.stringify(obj)); }
 
       function toggleMark(type, pageNum) {
         const marks = loadMarks();
@@ -388,23 +446,52 @@
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
+      // NEW: auto herhaallijst = bookmarks + important samen (zonder duplicaten)
+      function getRepeatList() {
+        const marks = loadMarks();
+        const allowed = new Set(pageList);
+
+        const bm = Object.keys(marks.bookmarks || {}).map(n => parseInt(n,10)).filter(Boolean).filter(n => allowed.has(n));
+        const imp = Object.keys(marks.important || {}).map(n => parseInt(n,10)).filter(Boolean).filter(n => allowed.has(n));
+
+        const all = Array.from(new Set([...imp, ...bm])); // important eerst, maar set maakt uniek
+        all.sort((a,b) => a - b);
+        return { imp, bm, all };
+      }
+
       function renderBookmarksPanel() {
         if (!docId) return;
-        const marks = loadMarks();
 
-        const bmPages = Object.keys(marks.bookmarks || {}).map((n) => parseInt(n, 10)).filter(Boolean);
-        const impPages = Object.keys(marks.important || {}).map((n) => parseInt(n, 10)).filter(Boolean);
-
-        // Only show those that exist in current pageList (range)
-        const allowed = new Set(pageList);
-        const bm = bmPages.filter((n) => allowed.has(n)).sort((a,b)=>a-b);
-        const imp = impPages.filter((n) => allowed.has(n)).sort((a,b)=>a-b);
+        const { imp, bm, all } = getRepeatList();
 
         const rows = [];
 
-        if (bm.length) {
-          rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Bladwijzers</div>`);
-          for (const n of bm) {
+        // NEW: Herhaal nu
+        rows.push(`<div style="padding:6px 8px; font-weight:700; color:#333;">Herhaal nu</div>`);
+        if (all.length) {
+          for (const n of all) {
+            const tags = [];
+            if (imp.includes(n)) tags.push("⭐");
+            if (bm.includes(n)) tags.push("🔖");
+            rows.push(`
+              <div class="bmRow">
+                <div class="bmMeta">Pagina ${n}</div>
+                <div class="bmTag">${tags.join(" ")}</div>
+                <button onclick="window.__sv.goto(${n})">Ga</button>
+              </div>
+            `);
+          }
+        } else {
+          rows.push(`<div style="padding:6px 8px; color:#666;">Nog geen ⭐ of 🔖 om te herhalen.</div>`);
+        }
+
+        rows.push(`<div style="height:12px;"></div>`);
+
+        // Bladwijzers
+        rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Bladwijzers</div>`);
+        const bmSorted = [...bm].sort((a,b)=>a-b);
+        if (bmSorted.length) {
+          for (const n of bmSorted) {
             rows.push(`
               <div class="bmRow">
                 <div class="bmMeta">Pagina ${n}</div>
@@ -420,9 +507,11 @@
 
         rows.push(`<div style="height:10px;"></div>`);
 
-        if (imp.length) {
-          rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Belangrijk</div>`);
-          for (const n of imp) {
+        // Belangrijk
+        rows.push(`<div style="padding:6px 8px; font-weight:600; color:#333;">Belangrijk</div>`);
+        const impSorted = [...imp].sort((a,b)=>a-b);
+        if (impSorted.length) {
+          for (const n of impSorted) {
             rows.push(`
               <div class="bmRow">
                 <div class="bmMeta">Pagina ${n}</div>
@@ -439,7 +528,6 @@
         bmList.innerHTML = rows.join("");
       }
 
-      // expose small hooks for inline buttons
       window.__sv = {
         goto: (n) => scrollToPage(n),
         unmark: (type, n) => {
@@ -473,7 +561,7 @@
       }
 
       function applyZoom() {
-        const clamped = Math.max(50, Math.min(200, zoomPct));
+        const clamped = clamp(zoomPct, 50, 200);
         zoomPct = clamped;
         zoomEl.value = String(clamped);
         zoomLabel.textContent = `${clamped}%`;
@@ -481,10 +569,7 @@
         try { localStorage.setItem("sv_zoom", String(clamped)); } catch (_) {}
       }
 
-      function setZoomPercent(pct) {
-        zoomPct = pct;
-        applyZoom();
-      }
+      function setZoomPercent(pct) { zoomPct = pct; applyZoom(); }
 
       function setFollowMode(mode) {
         followMode = mode;
@@ -510,20 +595,18 @@
       applyZoom();
       setActiveModeButtons();
 
-      // Manual controls disable follow mode
       zoomEl.addEventListener("input", () => { disableFollowMode(); setZoomPercent(parseInt(zoomEl.value, 10)); });
       zoomOutBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(zoomPct - 10); });
       zoomInBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(zoomPct + 10); });
       zoomResetBtn.addEventListener("click", () => { disableFollowMode(); setZoomPercent(100); });
 
-      // Fit-to-width (one-off)
       function computeFitToWidthPct() {
         const containerWidth = pinchArea.getBoundingClientRect().width;
         const baseWidth = pagesEl.getBoundingClientRect().width;
         if (!containerWidth || !baseWidth) return null;
         const margin = 24;
         const target = Math.floor(((containerWidth - margin) / baseWidth) * 100);
-        return Math.max(50, Math.min(200, target));
+        return clamp(target, 50, 200);
       }
       function fitToWidthOnce() {
         const target = computeFitToWidthPct();
@@ -531,7 +614,6 @@
       }
       zoomFitBtn.addEventListener("click", () => { disableFollowMode(); fitToWidthOnce(); });
 
-      // Fit-to-page (height) based on first page
       function computeFitToPagePct() {
         const firstImg = pagesEl.querySelector("img");
         if (!firstImg) return null;
@@ -548,14 +630,13 @@
         if (!baseH) return null;
 
         const target = Math.floor((availableH / baseH) * 100);
-        return Math.max(50, Math.min(200, target));
+        return clamp(target, 50, 200);
       }
       function fitToPageOnce() {
         const target = computeFitToPagePct();
         if (target != null) setZoomPercent(target);
       }
 
-      // Follow buttons
       modeWidthBtn.addEventListener("click", () => {
         if (followMode === "width") setFollowMode("none");
         else { setFollowMode("width"); fitToWidthOnce(); }
@@ -571,7 +652,7 @@
       }
       window.addEventListener("resize", onResizeFollow);
 
-      // Pinch-to-zoom (touch) disables follow mode
+      // Pinch-to-zoom disables follow mode
       let pinchActive = false;
       let startDist = 0;
       let startZoom = 100;
@@ -601,7 +682,7 @@
         const ratio = d / startDist;
         const next = Math.round(startZoom * ratio);
 
-        zoomPct = Math.max(50, Math.min(200, next));
+        zoomPct = clamp(next, 50, 200);
         applyZoom();
       }, { passive: true });
 
@@ -628,6 +709,7 @@
         if (e.key === "Escape") {
           if (document.body.classList.contains("focus")) setFocusMode(false);
           if (bmPanel.style.display === "block") bmPanel.style.display = "none";
+          if (idlePrompt.style.display === "flex") idlePrompt.style.display = "none";
         }
       });
 
@@ -636,17 +718,16 @@
         bmPanel.style.display = (bmPanel.style.display === "block") ? "none" : "block";
         renderBookmarksPanel();
       });
-      bmClose.addEventListener("click", () => {
-        bmPanel.style.display = "none";
-      });
+      bmClose.addEventListener("click", () => { bmPanel.style.display = "none"; });
 
       // --- Page indicator + scroll progress
-      let currentVisiblePage = null;
       function updatePageIndicator(pageNum) {
         if (!pageList.length || !pageIndexByNumber.size) return;
         const idx = pageIndexByNumber.get(pageNum);
         if (idx == null) return;
-        pageIndicator.textContent = `Pagina ${idx + 1} / ${pageList.length}`;
+
+        // NEW: show both (range index + original page number)
+        pageIndicator.textContent = `Pagina ${idx + 1} / ${pageList.length} (Origineel: ${pageNum})`;
       }
 
       function updateProgressBar() {
@@ -659,16 +740,13 @@
         progressBar.style.width = `${Math.round(pct * 100)}%`;
       }
 
-      window.addEventListener("scroll", () => {
-        updateProgressBar();
-      }, { passive: true });
+      window.addEventListener("scroll", () => { updateProgressBar(); }, { passive: true });
 
       // Observe which page card is in view
       let io = null;
       function setupIntersectionObserver() {
         if (io) io.disconnect();
         io = new IntersectionObserver((entries) => {
-          // pick the most "visible" entry
           let best = null;
           for (const e of entries) {
             if (!e.isIntersecting) continue;
@@ -682,9 +760,89 @@
           if (currentVisiblePage !== pageNum) {
             currentVisiblePage = pageNum;
             updatePageIndicator(pageNum);
+            updatePrevNextButtons();
           }
         }, { threshold: [0.25, 0.5, 0.75] });
       }
+
+      // NEW: prev/next
+      function currentIndex() {
+        if (!currentVisiblePage) return 0;
+        const idx = pageIndexByNumber.get(currentVisiblePage);
+        return (idx == null) ? 0 : idx;
+      }
+
+      function updatePrevNextButtons() {
+        const idx = currentIndex();
+        btnPrev.disabled = (idx <= 0);
+        btnNext.disabled = (idx >= pageList.length - 1);
+        btnPrev.style.opacity = btnPrev.disabled ? "0.4" : "1";
+        btnNext.style.opacity = btnNext.disabled ? "0.4" : "1";
+      }
+
+      btnPrev.addEventListener("click", () => {
+        const idx = currentIndex();
+        const targetIdx = Math.max(0, idx - 1);
+        scrollToPage(pageList[targetIdx]);
+      });
+      btnNext.addEventListener("click", () => {
+        const idx = currentIndex();
+        const targetIdx = Math.min(pageList.length - 1, idx + 1);
+        scrollToPage(pageList[targetIdx]);
+      });
+
+      // NEW: study time tracker (active time)
+      // - telt alleen als tab zichtbaar is én er recent activiteit is (laatste 45s)
+      let studySeconds = 0;
+      let lastActivityAt = Date.now();
+      const ACTIVE_WINDOW_MS = 45 * 1000;
+
+      function markActivity() {
+        lastActivityAt = Date.now();
+        hideIdlePrompt();
+      }
+
+      ["scroll", "mousemove", "keydown", "touchstart", "touchmove", "click"].forEach((evt) => {
+        window.addEventListener(evt, markActivity, { passive: true });
+      });
+
+      function updateStudyTimeUI() {
+        studyTimeEl.textContent = `Tijd: ${formatMMSS(studySeconds)}`;
+      }
+
+      setInterval(() => {
+        const visible = document.visibilityState === "visible";
+        const activeRecently = (Date.now() - lastActivityAt) <= ACTIVE_WINDOW_MS;
+        if (visible && activeRecently) {
+          studySeconds += 1;
+          updateStudyTimeUI();
+        }
+      }, 1000);
+
+      // NEW: inactivity soft prompt
+      const IDLE_AFTER_MS = 3 * 60 * 1000; // 3 min
+      let idleTimer = null;
+
+      function hideIdlePrompt() { idlePrompt.style.display = "none"; }
+      function showIdlePrompt() {
+        if (document.body.classList.contains("focus")) return; // focus = no nagging
+        idlePrompt.style.display = "flex";
+      }
+
+      function resetIdleTimer() {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(showIdlePrompt, IDLE_AFTER_MS);
+      }
+
+      function initIdle() {
+        resetIdleTimer();
+        ["scroll","mousemove","keydown","touchstart","touchmove","click"].forEach((evt) => {
+          window.addEventListener(evt, resetIdleTimer, { passive: true });
+        });
+      }
+
+      idleYes.addEventListener("click", () => { markActivity(); resetIdleTimer(); });
+      idleHide.addEventListener("click", () => { hideIdlePrompt(); resetIdleTimer(); });
 
       // Main
       (async function () {
@@ -726,7 +884,6 @@
           pageIndexByNumber = new Map();
           pageList.forEach((n, i) => pageIndexByNumber.set(n, i));
 
-          // Build pages
           setupIntersectionObserver();
 
           for (const pageNum of pageList) {
@@ -769,15 +926,16 @@
             card.appendChild(img);
             pagesEl.appendChild(card);
 
-            // Observe visibility
             io.observe(card);
           }
 
           // Initial UI updates
           updateProgressBar();
-
-          // set first page indicator immediately
+          currentVisiblePage = pageList[0];
           updatePageIndicator(pageList[0]);
+          updatePrevNextButtons();
+          updateStudyTimeUI();
+          initIdle();
 
           // If follow mode is active, adjust after first image loads
           const firstImg = pagesEl.querySelector("img");
@@ -794,7 +952,6 @@
             }, { once: true });
           }
 
-          // Keep bookmarks panel in sync when opened later
           renderBookmarksPanel();
 
         } catch (e) {
@@ -804,5 +961,4 @@
     </script>
   </body>
 </html>
-
 

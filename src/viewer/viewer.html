@@ -903,7 +903,9 @@
 
           renderBookmarksPanel();
 
-        } 
+        } catch (e) {
+          msg.textContent = ".";
+        }
       })();
     </script>
   </body>

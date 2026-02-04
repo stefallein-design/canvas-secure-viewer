@@ -54,7 +54,7 @@
       /* Labels */
       #zoomLabel { min-width: 64px; text-align: right; color: #333; font-size: 14px; }
       #pageIndicator { color: #333; font-size: 14px; padding-left: 2px; }
-      #studyTime { color:#333; font-size: 14px; padding-left: 2px; white-space: nowrap; }
+     
 
       /* Auto badge */
       #autoBadge {
@@ -284,7 +284,7 @@
       <div id="pageIndicator"></div>
 
       <!-- NEW: studietijd -->
-      <div id="studyTime"></div>
+     
 
       <button id="btnBookmarks" type="button" title="Bladwijzers & belangrijk">⭐</button>
       <button id="btnFocus" type="button" title="Focus-modus (ESC om te sluiten)">Focus</button>
@@ -386,7 +386,7 @@
       const btnPrev = document.getElementById("btnPrev");
       const btnNext = document.getElementById("btnNext");
 
-      const studyTimeEl = document.getElementById("studyTime");
+      
 
       const idlePrompt = document.getElementById("idlePrompt");
       const idleYes = document.getElementById("idleYes");
@@ -883,7 +883,7 @@
           currentVisiblePage = pageList[0];
           updatePageIndicator(pageList[0]);
           updatePrevNextButtons();
-          updateStudyTimeUI();
+          
           initIdle();
 
           // If follow mode is active, adjust after first image loads

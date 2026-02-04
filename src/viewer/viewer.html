@@ -791,32 +791,7 @@
         scrollToPage(pageList[targetIdx]);
       });
 
-      
-
-      // NEW: inactivity soft prompt
-      const IDLE_AFTER_MS = 3 * 60 * 1000; // 3 min
-      let idleTimer = null;
-
-      function hideIdlePrompt() { idlePrompt.style.display = "none"; }
-      function showIdlePrompt() {
-        if (document.body.classList.contains("focus")) return; // focus = no nagging
-        idlePrompt.style.display = "flex";
-      }
-
-      function resetIdleTimer() {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(showIdlePrompt, IDLE_AFTER_MS);
-      }
-
-      function initIdle() {
-        resetIdleTimer();
-        ["scroll","mousemove","keydown","touchstart","touchmove","click"].forEach((evt) => {
-          window.addEventListener(evt, resetIdleTimer, { passive: true });
-        });
-      }
-
-      idleYes.addEventListener("click", () => { markActivity(); resetIdleTimer(); });
-      idleHide.addEventListener("click", () => { hideIdlePrompt(); resetIdleTimer(); });
+    
 
       // Main
       (async function () {

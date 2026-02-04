@@ -137,7 +137,7 @@
         inset: 0;
         z-index: 9999;
         pointer-events: none;
-        opacity: 0.075;
+        opacity: 0.032;
         transform: rotate(-18deg);
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -791,33 +791,7 @@
         scrollToPage(pageList[targetIdx]);
       });
 
-      // NEW: study time tracker (active time)
-      // - telt alleen als tab zichtbaar is én er recent activiteit is (laatste 45s)
-      let studySeconds = 0;
-      let lastActivityAt = Date.now();
-      const ACTIVE_WINDOW_MS = 45 * 1000;
-
-      function markActivity() {
-        lastActivityAt = Date.now();
-        hideIdlePrompt();
-      }
-
-      ["scroll", "mousemove", "keydown", "touchstart", "touchmove", "click"].forEach((evt) => {
-        window.addEventListener(evt, markActivity, { passive: true });
-      });
-
-      function updateStudyTimeUI() {
-        studyTimeEl.textContent = `Tijd: ${formatMMSS(studySeconds)}`;
-      }
-
-      setInterval(() => {
-        const visible = document.visibilityState === "visible";
-        const activeRecently = (Date.now() - lastActivityAt) <= ACTIVE_WINDOW_MS;
-        if (visible && activeRecently) {
-          studySeconds += 1;
-          updateStudyTimeUI();
-        }
-      }, 1000);
+      
 
       // NEW: inactivity soft prompt
       const IDLE_AFTER_MS = 3 * 60 * 1000; // 3 min
